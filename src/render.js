@@ -54,11 +54,17 @@ function renderPlayers(state) {
     const cell = getCell(state.map, player.position.track, player.position.index);
     const card = document.createElement('div');
     card.className = 'player-card';
-    card.innerHTML = `
-      <strong>${player.name}</strong>
-      <span>HP ${player.hp} / ${player.maxHp}</span>
-      <span>現在地: ${CELL_ICONS[cell.type]}</span>
-    `;
+
+    const nameEl = document.createElement('strong');
+    nameEl.textContent = player.name;
+    const hpEl = document.createElement('span');
+    hpEl.textContent = `HP ${player.hp} / ${player.maxHp}`;
+    const cellEl = document.createElement('span');
+    cellEl.textContent = `現在地: ${CELL_ICONS[cell.type]}`;
+
+    card.appendChild(nameEl);
+    card.appendChild(hpEl);
+    card.appendChild(cellEl);
     section.appendChild(card);
   }
   return section;
