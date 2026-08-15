@@ -740,6 +740,12 @@ test('resolveEffects heals players within radius 3 on the same track', () => {
   const map = { trunk: [{ type: 'heal' }, {}, {}, {}, {}], branches: [] };
   const state = baseState({
     map,
+    // boss.hp: 0 disables the boss-attack phase so this test isolates heal
+    // behavior. fireDragon has no zero-damage face, so leaving hp at the
+    // baseState() default of 300 would have the boss-attack phase land
+    // nonzero damage on every undefended player, including 'far', making
+    // the `far.hp === 5` assertion below unreachable.
+    boss: { id: 'fireDragon', name: '炎竜', hp: 0, maxHp: 300 },
     players: [
       { id: 'healer', hp: 10, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 } },
       { id: 'near', hp: 5, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 3 } },
