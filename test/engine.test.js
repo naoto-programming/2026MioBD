@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rollDie, createGameState, moveOnePlayer, resolveMovement, resolveEffects } from '../src/engine.js';
+import { rollDie, createGameState, moveOnePlayer, resolveMovement, resolveEffects, checkGameOver, playTurn } from '../src/engine.js';
 
 test('rollDie returns 1-6 based on rng', () => {
   assert.equal(rollDie(() => 0), 1);
@@ -141,4 +141,31 @@ test('resolveEffects revives a player who reaches 0 hp at half max hp', () => {
   const p1 = result.players.find((p) => p.id === 'p1');
   assert.equal(p1.hp, 15); // maxHp/2
   assert.equal(p1.skipNextEffect, true);
+});
+
+test('checkGameOver reports win when boss hp is 0', () => {
+  const result = checkGameOver({ turn: 1, turnLimit: 10, boss: { hp: 0 } });
+  assert.deepEqual(result, { over: true, result: 'win' });
+});
+
+test('checkGameOver reports lose when turn exceeds turnLimit', () => {
+  const result = checkGameOver({ turn: 10, turnLimit: 10, boss: { hp: 50 } });
+  assert.deepEqual(result, { over: true, result: 'lose' });
+});
+
+test('checkGameOver reports not over otherwise', () => {
+  const result = checkGameOver({ turn: 3, turnLimit: 10, boss: { hp: 50 } });
+  assert.deepEqual(result, { over: false, result: null });
+});
+
+test('playTurn moves players, resolves effects, and advances the turn counter', () => {
+  const state = createGameState(
+    [{ id: 'p1', name: 'Alice', characterId: 'warrior' }],
+    'fireDragon',
+    () => 0.5,
+  );
+  const { state: nextState, gameOver } = playTurn(state, { p1: 6 }, {}, {}, {}, () => 0.5);
+  assert.equal(nextState.turn, 1);
+  assert.deepEqual(nextState.players[0].position, { track: 'trunk', index: 6 });
+  assert.equal(gameOver.over, false);
 });

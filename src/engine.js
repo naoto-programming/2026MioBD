@@ -154,3 +154,17 @@ export function resolveEffects(state, attackRolls, damageRolls, rng = Math.rando
 
   return { ...state, players, boss, log };
 }
+
+export function checkGameOver(state) {
+  if (state.boss.hp <= 0) return { over: true, result: 'win' };
+  if (state.turn >= state.turnLimit) return { over: true, result: 'lose' };
+  return { over: false, result: null };
+}
+
+export function playTurn(state, moves, chooseBranchFns, attackRolls, damageRolls, rng = Math.random) {
+  const movedState = resolveMovement(state, moves, chooseBranchFns, rng);
+  const resolvedState = resolveEffects(movedState, attackRolls, damageRolls, rng);
+  const nextState = { ...resolvedState, turn: resolvedState.turn + 1 };
+  const gameOver = checkGameOver(nextState);
+  return { state: nextState, gameOver };
+}
