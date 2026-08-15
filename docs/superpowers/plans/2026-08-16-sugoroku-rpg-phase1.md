@@ -40,7 +40,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/**/*.test.js"
   }
 }
 ```
@@ -116,7 +116,7 @@ Expected: FAIL (`src/mapGenerator.js`が存在しないためモジュール解�
 // src/mapGenerator.js
 export const CELL_TYPES = ['attack', 'defense', 'heal', 'item', 'damage'];
 
-export function randomCellType(rng) {
+export function randomCellType(rng = Math.random) {
   const index = Math.min(CELL_TYPES.length - 1, Math.floor(rng() * CELL_TYPES.length));
   return CELL_TYPES[index];
 }
@@ -125,7 +125,7 @@ export function createCell(type) {
   return { type };
 }
 
-export function createInitialMap(rng) {
+export function createInitialMap(rng = Math.random) {
   const trunk = [];
   for (let i = 0; i < 20; i++) trunk.push(createCell(randomCellType(rng)));
   return { trunk, branches: [] };
@@ -249,7 +249,7 @@ const BRANCH_THEMES = {
 
 export const BRANCH_THEME_NAMES = Object.keys(BRANCH_THEMES);
 
-export function weightedCellType(weights, rng) {
+export function weightedCellType(weights, rng = Math.random) {
   const roll = rng();
   let cumulative = 0;
   for (const [type, weight] of Object.entries(weights)) {
@@ -259,7 +259,7 @@ export function weightedCellType(weights, rng) {
   return Object.keys(weights)[Object.keys(weights).length - 1];
 }
 
-export function createBranch(id, theme, connectFromIndex, rng) {
+export function createBranch(id, theme, connectFromIndex, rng = Math.random) {
   const length = 15 + Math.floor(rng() * 6); // 15-20
   const weights = BRANCH_THEMES[theme];
   const cells = [];
@@ -267,7 +267,7 @@ export function createBranch(id, theme, connectFromIndex, rng) {
   return { id, theme, connectFrom: connectFromIndex, connectTo: null, cells };
 }
 
-export function extendTrunk(map, targetLength, rng) {
+export function extendTrunk(map, targetLength, rng = Math.random) {
   const trunk = map.trunk.slice();
   while (trunk.length < targetLength) trunk.push(createCell(randomCellType(rng)));
   return { ...map, trunk };
@@ -283,7 +283,7 @@ export function isBranchPoint(map, trunkIndex) {
 
 const BRANCH_SPAWN_CHANCE = 0.08;
 
-export function ensureMapAhead(map, playerPositions, lookahead, rng) {
+export function ensureMapAhead(map, playerPositions, lookahead, rng = Math.random) {
   const furthestTrunkIndex = playerPositions
     .filter((p) => p.track === 'trunk')
     .reduce((max, p) => Math.max(max, p.index), 0);
