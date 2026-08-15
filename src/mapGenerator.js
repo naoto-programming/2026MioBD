@@ -1,6 +1,6 @@
 export const CELL_TYPES = ['attack', 'defense', 'heal', 'item', 'damage'];
 
-export function randomCellType(rng) {
+export function randomCellType(rng = Math.random) {
   const index = Math.min(CELL_TYPES.length - 1, Math.floor(rng() * CELL_TYPES.length));
   return CELL_TYPES[index];
 }
@@ -9,7 +9,7 @@ export function createCell(type) {
   return { type };
 }
 
-export function createInitialMap(rng) {
+export function createInitialMap(rng = Math.random) {
   const trunk = [];
   for (let i = 0; i < 20; i++) trunk.push(createCell(randomCellType(rng)));
   return { trunk, branches: [] };
