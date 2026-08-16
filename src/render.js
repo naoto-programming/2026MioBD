@@ -47,6 +47,15 @@ function renderBoard(state) {
   return section;
 }
 
+// プレイヤーが幹上/分岐上のどちらにいるかを示すラベルを組み立てる
+// (分岐上ならテーマ名も添える。renderPlayersがボード上に表示されない
+// 分岐上プレイヤーの現在地を判別できるようにするための表示専用ヘルパー)
+function trackDisplayLabel(map, position) {
+  if (position.track === 'trunk') return '幹';
+  const branch = map.branches.find((b) => b.id === position.track);
+  return `枝(${branch.theme})`;
+}
+
 function renderPlayers(state) {
   const section = document.createElement('section');
   section.className = 'players';
@@ -60,7 +69,8 @@ function renderPlayers(state) {
     const hpEl = document.createElement('span');
     hpEl.textContent = `HP ${player.hp} / ${player.maxHp}`;
     const cellEl = document.createElement('span');
-    cellEl.textContent = `現在地: ${CELL_ICONS[cell.type]}`;
+    const trackLabel = trackDisplayLabel(state.map, player.position);
+    cellEl.textContent = `現在地: ${trackLabel} ${player.position.index} ${CELL_ICONS[cell.type]}`;
 
     card.appendChild(nameEl);
     card.appendChild(hpEl);
