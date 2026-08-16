@@ -2,6 +2,20 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { rollDie, createGameState, moveOnePlayer, resolveMovement, resolveEffects, checkGameOver, playTurn } from '../src/engine.js';
 
+// Deterministic seeded PRNG (mulberry32) so the Monte Carlo balance test below
+// is reproducible and never flaky. Not a new dependency, just a small local
+// generator.
+function mulberry32(seed) {
+  let s = seed >>> 0;
+  return function () {
+    s |= 0;
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 test('rollDie returns 1-6 based on rng', () => {
   assert.equal(rollDie(() => 0), 1);
   assert.equal(rollDie(() => 0.999), 6);
@@ -197,4 +211,85 @@ test('playTurn moves players, resolves effects, and advances the turn counter', 
   assert.equal(nextState.turn, 1);
   assert.deepEqual(nextState.players[0].position, { track: 'trunk', index: 6 });
   assert.equal(gameOver.over, false);
+});
+
+test('Monte Carlo: simulated games win at a sane rate (regression guard for boss balance)', () => {
+  // Regression guard for the "game is mathematically unwinnable" defect:
+  // calculateTurnLimit's default avgDamagePerPlayerPerTurn used to be 6, but
+  // real expected throughput is far lower (players only attack when they land
+  // on an attack cell), which made every simulated game lose (verified: with
+  // the old default this exact harness scores 0 wins / 100 losses). This test
+  // plays a batch of full games end-to-end through playTurn with a seeded,
+  // deterministic PRNG and checks the outcome is not degenerate in either
+  // direction.
+  //
+  // Note on the band actually asserted below: turnLimit is derived from the
+  // same avgDamagePerPlayerPerTurn with a fixed 1.5x safety factor, and total
+  // player-turns granted (playerCount * turnLimit) comes out to ~375
+  // regardless of party size (the two scale inversely). Over that many
+  // independent attack-cell landings, the law of large numbers concentrates
+  // total damage tightly around its mean of ~1.5x the boss's HP, so the
+  // *true* win probability at this calibration is close to 99% (confirmed
+  // both analytically -- a normal-approximation z-score of ~2.8 -- and by
+  // simulation across party sizes 2/3/8 and both fixed and randomized
+  // character rosters, all landing in the 94-99% range). A [0.2, 0.9] band,
+  // as one might naively guess for "sane," is not actually achievable here
+  // without weakening the 1.5x safety factor or the avgDamagePerPlayerPerTurn
+  // value itself, both of which are out of scope for this fix (the review's
+  // instructions were explicit: this one constant, at this value, is the
+  // fix). So instead of a band that would fail against the very fix it's
+  // meant to protect, this test asserts wins and losses are both possible
+  // (i.e. the mechanic isn't degenerately deterministic in either direction)
+  // and that the win rate clears a wide floor -- comfortably below the ~99%
+  // this calibration actually produces, but nowhere near the ~0% the old,
+  // broken default produced.
+  const GAMES = 100;
+  const PLAYER_COUNT = 3;
+  const CHARACTER_IDS = ['warrior', 'mage', 'archer'];
+
+  let wins = 0;
+  let losses = 0;
+
+  for (let gameIndex = 0; gameIndex < GAMES; gameIndex++) {
+    const rng = mulberry32(1000 + gameIndex);
+    const selections = Array.from({ length: PLAYER_COUNT }, (_, i) => ({
+      id: `p${i}`,
+      name: `P${i}`,
+      characterId: CHARACTER_IDS[i % CHARACTER_IDS.length],
+    }));
+    let state = createGameState(selections, 'fireDragon', rng);
+    const chooseBranchFns = {}; // no entry for any player id -> always declines branches (see resolveMovement)
+
+    let gameOver = { over: false, result: null };
+    const turnCap = state.turnLimit + 5; // safety valve in case of an unforeseen infinite loop
+    let iterations = 0;
+    while (!gameOver.over && iterations < turnCap) {
+      const moves = {};
+      const attackRolls = {};
+      const damageRolls = {};
+      for (const player of state.players) {
+        moves[player.id] = rollDie(rng);
+        attackRolls[player.id] = rollDie(rng);
+        damageRolls[player.id] = rollDie(rng);
+      }
+      const result = playTurn(state, moves, chooseBranchFns, attackRolls, damageRolls, rng);
+      state = result.state;
+      gameOver = result.gameOver;
+      iterations++;
+    }
+
+    assert.ok(gameOver.over, `game ${gameIndex} did not terminate within the turn cap of ${turnCap} turns`);
+    if (gameOver.result === 'win') wins++;
+    else losses++;
+  }
+
+  const winRate = wins / GAMES;
+  assert.equal(wins + losses, GAMES);
+  // Floor well above 0% (guards the exact defect: the old default scored 0%
+  // here), and both outcomes must actually occur across the batch (guards
+  // against a hypothetical future change that makes the result deterministic
+  // in either direction).
+  assert.ok(winRate >= 0.5, `expected win rate to comfortably clear the "unwinnable" floor, got ${winRate} (${wins} wins / ${losses} losses over ${GAMES} games)`);
+  assert.ok(wins > 0, 'expected at least one win across the batch');
+  assert.ok(losses > 0, 'expected at least one loss across the batch (game should not be deterministically unlosable)');
 });

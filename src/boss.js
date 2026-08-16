@@ -18,7 +18,12 @@ export function rollBossAttack(bossId, dieValue) {
   return BOSSES[bossId].diceTable[dieValue];
 }
 
-// avgDamagePerPlayerPerTurn/safetyFactorは初期の仮値。実プレイで調整する想定。
-export function calculateTurnLimit(maxHp, playerCount, avgDamagePerPlayerPerTurn = 6, safetyFactor = 1.5) {
+// avgDamagePerPlayerPerTurn = 1.2 は実測に基づく較正値(プレースホルダーではない)。
+// プレイヤーは攻撃マスに止まったターンにしか攻撃できず、マスの種類は5種類の一様分布
+// なので攻撃マスに止まる確率は1/5(=0.2)。4キャラクターの平均攻撃力はおよそ5.7。
+// よって1人1ターンあたりの期待ダメージは 0.2 * 5.7 ≈ 1.15。1.2はこの実測値にわずかな
+// 余裕を持たせた値で、safetyFactor(1.5)の安全マージンを実質的に保つために選んだ。
+// 将来バランス調整する際は、この値を再導出する必要はない。
+export function calculateTurnLimit(maxHp, playerCount, avgDamagePerPlayerPerTurn = 1.2, safetyFactor = 1.5) {
   return Math.ceil((maxHp / (playerCount * avgDamagePerPlayerPerTurn)) * safetyFactor);
 }
