@@ -18,7 +18,7 @@ function renderBoss(state) {
     <h2>${state.boss.name}</h2>
     <div class="hp-bar"><div class="hp-bar-fill" style="width:${hpPercent}%"></div></div>
     <p>HP ${state.boss.hp} / ${state.boss.maxHp}</p>
-    <p>ターン ${state.turn} / ${state.turnLimit}</p>
+    <p>ターン ${state.turn + 1} / ${state.turnLimit}</p>
   `;
   return section;
 }
