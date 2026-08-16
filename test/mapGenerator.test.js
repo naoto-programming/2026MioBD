@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CELL_TYPES, randomCellType, createCell, createInitialMap, getCell } from '../src/mapGenerator.js';
+import { computeBoardWindowRange } from '../src/render.js';
 
 test('randomCellType returns a value from CELL_TYPES', () => {
   const type = randomCellType(() => 0);
@@ -35,6 +36,7 @@ import {
   isBranchPoint,
   branchesAt,
   ensureMapAhead,
+  trimOldTrunkCells,
 } from '../src/mapGenerator.js';
 
 test('extendTrunk grows trunk to target length without shrinking existing cells', () => {
@@ -123,6 +125,44 @@ test('ensureMapAhead always produces branches whose connectTo is strictly ahead 
   }
 });
 
+test('ensureMapAhead keeps branch rejoin distance long enough for the branch length', () => {
+  const map = createInitialMap(() => 0);
+  const positions = [{ track: 'trunk', index: 0 }];
+  const rng = () => 0.01;
+  const result = ensureMapAhead(map, positions, 30, rng);
+
+  for (const branch of result.branches) {
+    assert.ok(branch.connectTo >= branch.connectFrom + branch.cells.length + 5, `branch ${branch.id} should give the branch room to finish before rejoining the trunk`);
+  }
+});
+
+test('trimOldTrunkCells removes cells older than 7 behind the slowest player and keeps branch geometry aligned', () => {
+  const map = {
+    trunk: Array.from({ length: 30 }, () => ({ type: 'attack' })),
+    branches: [{ id: 'branch-10', theme: 'heal', connectFrom: 10, connectTo: 18, cells: Array.from({ length: 8 }, () => ({ type: 'heal' })) }],
+  };
+
+  const trimmed = trimOldTrunkCells(map, [{ track: 'trunk', index: 10 }], 7);
+  assert.equal(trimmed.trunk.length, 27);
+  assert.equal(trimmed.branches[0].connectFrom, 7);
+  assert.equal(trimmed.branches[0].connectTo, 15);
+});
+
+test('computeBoardWindowRange keeps the earliest player in view when a distant branch is spawned', () => {
+  const state = {
+    players: [{ id: 'p1', position: { track: 'trunk', index: 4 } }, { id: 'p2', position: { track: 'branch-39', index: 0 } }],
+    map: {
+      trunk: Array.from({ length: 80 }, () => ({ type: 'attack' })),
+      branches: [{ id: 'branch-39', theme: 'heal', connectFrom: 39, connectTo: 59, cells: Array.from({ length: 20 }, () => ({ type: 'heal' })) }],
+    },
+  };
+
+  const range = computeBoardWindowRange(state, 10);
+  assert.ok(range.start <= 4, 'earliest player should remain inside the visible range');
+  assert.ok(4 < range.end, 'earliest player should be visible at the left edge of the board window');
+  assert.ok(range.start <= 39 && 39 < range.end, 'spawned branch should also stay inside the visible range');
+});
+
 test('getCell throws a descriptive error for an out-of-range trunk index instead of returning undefined', () => {
   const map = createInitialMap(() => 0);
   assert.throws(() => getCell(map, 'trunk', 999), /out of range/);
@@ -131,6 +171,28 @@ test('getCell throws a descriptive error for an out-of-range trunk index instead
 test('getCell throws a descriptive error for an out-of-range branch index instead of returning undefined', () => {
   const map = { trunk: [{ type: 'item' }], branches: [{ id: 'b', theme: 'heal', connectFrom: 0, connectTo: 5, cells: [{ type: 'item' }] }] };
   assert.throws(() => getCell(map, 'b', 999), /out of range/);
+});
+
+test('createInitialMap never produces 3 identical cell types in a row', () => {
+  // Uniform IID picks would occasionally streak 3+ in a row, which reads as
+  // "biased" to a player even though it's statistically unremarkable. Use a
+  // cycling rng (not a real random source) so the underlying picker itself
+  // wants to repeat 'attack' 5 times in a row, and verify the anti-streak
+  // wrapper breaks that up.
+  let call = 0;
+  const rng = () => {
+    // returns 0 (-> CELL_TYPES[0] = 'attack') on 5 calls out of every 6,
+    // and a different value on the 6th, simulating a picker that would
+    // otherwise streak.
+    call += 1;
+    return call % 6 === 0 ? 0.9 : 0;
+  };
+  const map = createInitialMap(rng);
+  let streak = 1;
+  for (let i = 1; i < map.trunk.length; i++) {
+    streak = map.trunk[i].type === map.trunk[i - 1].type ? streak + 1 : 1;
+    assert.ok(streak <= 2, `found a streak of ${streak} identical cells ending at index ${i}`);
+  }
 });
 
 test('getCell throws a descriptive error for an unknown branch id', () => {

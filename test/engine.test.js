@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rollDie, createGameState, moveOnePlayer, resolveMovement, resolveEffects, checkGameOver, playTurn } from '../src/engine.js';
+import { rollDie, createGameState, moveOnePlayer, resolveMovement, resolveEffects, checkGameOver, playTurn, sortPlayersByProgress, rollItemBuff } from '../src/engine.js';
+import { computeBoardWindowRange } from '../src/render.js';
+import { BOSSES } from '../src/boss.js';
+import { CHARACTERS } from '../src/characters.js';
 
 // Deterministic seeded PRNG (mulberry32) so the Monte Carlo balance test below
 // is reproducible and never flaky. Not a new dependency, just a small local
@@ -32,11 +35,37 @@ test('createGameState sets up players, boss, turnLimit and initial map', () => {
   );
   assert.equal(state.turn, 0);
   assert.ok(state.turnLimit > 0);
-  assert.equal(state.boss.hp, 300);
+  assert.equal(state.boss.hp, BOSSES.fireDragon.maxHp);
   assert.equal(state.players.length, 2);
   assert.equal(state.players[0].hp, state.players[0].maxHp);
   assert.deepEqual(state.players[0].position, { track: 'trunk', index: 0 });
   assert.equal(state.map.trunk.length, 20);
+});
+
+test('sortPlayersByProgress keeps the furthest player first even when earlier in array order', () => {
+  const map = {
+    trunk: Array.from({ length: 30 }, () => ({ type: 'attack' })),
+    branches: [{ id: 'branch-5', connectFrom: 5, connectTo: 12, cells: [{ type: 'heal' }, { type: 'heal' }, { type: 'heal' }] }],
+  };
+  const players = [
+    { id: 'p1', position: { track: 'trunk', index: 1 } },
+    { id: 'p2', position: { track: 'branch-5', index: 2 } },
+    { id: 'p3', position: { track: 'trunk', index: 4 } },
+  ];
+
+  const ordered = sortPlayersByProgress(players, map);
+  assert.deepEqual(ordered.map((player) => player.id), ['p2', 'p3', 'p1']);
+});
+
+test('branch progress starts after the branch point so the route does not overlap the split tile', () => {
+  const map = {
+    trunk: Array.from({ length: 20 }, () => ({ type: 'attack' })),
+    branches: [{ id: 'branch-5', connectFrom: 5, connectTo: 12, cells: [{ type: 'heal' }, { type: 'heal' }, { type: 'heal' }] }],
+  };
+
+  const player = { position: { track: 'branch-5', index: 0 } };
+  const progress = player.position.track === 'branch-5' ? map.branches[0].connectFrom + 1 + player.position.index : player.position.index;
+  assert.equal(progress, 6);
 });
 
 test('moveOnePlayer advances along the trunk when there is no fork', () => {
@@ -113,7 +142,10 @@ test('resolveEffects applies attack damage to the boss using character power', (
     players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 } }],
   });
   const result = resolveEffects(state, { p1: 6 }, {}, () => 0.5);
-  assert.equal(result.boss.hp, 300 - 10); // warrior face-6 power is 10
+  // Warrior's face-6 triggers the 'critical' special (x1.5 power), so the
+  // applied damage is higher than the raw dice-table power.
+  const expectedDamage = Math.round(CHARACTERS.warrior.diceTable[6].power * 1.5);
+  assert.equal(result.boss.hp, 300 - expectedDamage);
 });
 
 test('resolveEffects protects players on a defense cell and their co-located allies from boss damage', () => {
@@ -133,13 +165,28 @@ test('resolveEffects protects players on a defense cell and their co-located all
 test('resolveEffects damage cell: die value 1-2 deals zero damage, otherwise damage equals die value', () => {
   const map = { trunk: [{ type: 'damage' }], branches: [] };
   const lowRoll = resolveEffects(
-    baseState({ map, players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 } }] }),
+    baseState({
+      map,
+      boss: { id: 'fireDragon', name: '炎竜', hp: 0, maxHp: 300 },
+      players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 } }],
+    }),
     {},
     { p1: 2 },
-    () => 0.99, // boss die won't matter for this assertion beyond being applied too
+    () => 0.99,
   );
-  const p1Hp = lowRoll.players.find((p) => p.id === 'p1').hp;
-  assert.ok(p1Hp === 30 - 0 - lowRoll.log.find((e) => e.type === 'bossAttack').damage);
+  assert.equal(lowRoll.players.find((p) => p.id === 'p1').hp, 30);
+
+  const highRoll = resolveEffects(
+    baseState({
+      map,
+      boss: { id: 'fireDragon', name: '炎竜', hp: 0, maxHp: 300 },
+      players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 } }],
+    }),
+    {},
+    { p1: 5 },
+    () => 0.99,
+  );
+  assert.equal(highRoll.players.find((p) => p.id === 'p1').hp, 25);
 });
 
 test('resolveEffects revives a player who reaches 0 hp at half max hp', () => {
@@ -155,6 +202,32 @@ test('resolveEffects revives a player who reaches 0 hp at half max hp', () => {
   const p1 = result.players.find((p) => p.id === 'p1');
   assert.equal(p1.hp, 15); // maxHp/2
   assert.equal(p1.skipNextEffect, true);
+});
+
+test('resolveEffects records the boss die roll in the state so the UI can animate it', () => {
+  const map = { trunk: [{ type: 'item' }], branches: [] };
+  const state = baseState({
+    map,
+    boss: { id: 'fireDragon', name: '炎竜', hp: 300, maxHp: 300 },
+    players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 } }],
+  });
+  const result = resolveEffects(state, {}, {}, () => 0.0);
+  assert.equal(result.boss.lastRoll, 1);
+  assert.equal(result.boss.hp, 300);
+});
+
+test('resolveEffects treats a boss roll of 1 as a failed attack with no damage', () => {
+  const map = { trunk: [{ type: 'item' }], branches: [] };
+  const state = baseState({
+    map,
+    boss: { id: 'fireDragon', name: '炎竜', hp: 300, maxHp: 300 },
+    players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 } }],
+  });
+  const result = resolveEffects(state, {}, {}, () => 0.0);
+  const logEntry = result.log.find((entry) => entry.type === 'bossAttack');
+  assert.equal(logEntry.name, '失敗');
+  assert.equal(logEntry.damage, 0);
+  assert.equal(result.players[0].hp, 30);
 });
 
 test('resolveEffects suppresses heal for a player consuming skipNextEffect, and clears the flag afterward', () => {
@@ -190,9 +263,9 @@ test('resolveEffects suppresses defense for a player consuming skipNextEffect: t
     map,
     players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, skipNextEffect: true }],
   });
-  const result = resolveEffects(state, {}, {}, () => 0); // rng=0 -> boss die face 1 (爪撃, damage 4)
+  const result = resolveEffects(state, {}, {}, () => 0.2); // boss die face 2 -> 火球, damage 12
   const p1 = result.players.find((p) => p.id === 'p1');
-  assert.equal(p1.hp, 26, 'defense should be suppressed, so boss damage (4) still lands');
+  assert.equal(p1.hp, 18, 'defense should be suppressed, so boss damage (12) still lands');
   assert.equal(p1.skipNextEffect, false, 'flag should be cleared after being consumed');
 });
 
@@ -216,7 +289,8 @@ test('resolveEffects does not affect a player without skipNextEffect set (existi
     players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, skipNextEffect: false }],
   });
   const result = resolveEffects(state, { p1: 6 }, {}, () => 0.5);
-  assert.equal(result.boss.hp, 300 - 10, 'attack should apply normally when the flag is not set');
+  const expectedDamage = Math.round(CHARACTERS.warrior.diceTable[6].power * 1.5); // critical special
+  assert.equal(result.boss.hp, 300 - expectedDamage, 'attack should apply normally when the flag is not set');
   assert.equal(result.players.find((p) => p.id === 'p1').skipNextEffect, false);
 });
 
@@ -234,6 +308,121 @@ test('resolveEffects freshly sets skipNextEffect for a player who is revived aga
   const p1 = result.players.find((p) => p.id === 'p1');
   assert.equal(p1.hp, 15); // maxHp/2
   assert.equal(p1.skipNextEffect, true, 'should be freshly set for the new revival, not cleared');
+});
+
+test('rollItemBuff maps every die face to a positive bonus and duration', () => {
+  for (let face = 1; face <= 6; face++) {
+    const buff = rollItemBuff(face);
+    assert.ok(['heal', 'defense', 'attack'].includes(buff.type), `face ${face} has an unexpected buff type: ${buff.type}`);
+    assert.ok(buff.bonus > 0, `face ${face} bonus should be positive`);
+    assert.ok(buff.duration > 0, `face ${face} duration should be positive`);
+  }
+});
+
+test('resolveEffects grants a buff and logs it when a player lands on an item cell', () => {
+  const map = { trunk: [{ type: 'item' }], branches: [] };
+  const state = baseState({
+    map,
+    boss: { id: 'fireDragon', name: '炎竜', hp: 0, maxHp: 300 }, // isolate from boss-attack phase
+    players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 } }],
+  });
+  const result = resolveEffects(state, {}, {}, () => 0.5, {}, { p1: 6 });
+  const p1 = result.players.find((p) => p.id === 'p1');
+  const expectedBuff = rollItemBuff(6);
+  assert.deepEqual(p1.buffs, [{ type: expectedBuff.type, bonus: expectedBuff.bonus, remainingTurns: expectedBuff.duration }]);
+  assert.ok(result.log.some((entry) => entry.type === 'item' && entry.by === 'p1'));
+});
+
+test('resolveEffects applies an active attack buff on top of character power', () => {
+  const map = { trunk: [{ type: 'attack' }], branches: [] };
+  const state = baseState({
+    boss: { id: 'fireDragon', name: '炎竜', hp: 300, maxHp: 300 },
+    map,
+    players: [{
+      id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior',
+      position: { track: 'trunk', index: 0 },
+      buffs: [{ type: 'attack', bonus: 5, remainingTurns: 2 }],
+    }],
+  });
+  // die value 1 (no special triggered) so the buff bonus is the only extra beyond base power
+  const result = resolveEffects(state, { p1: 1 }, {}, () => 0.99);
+  const basePower = CHARACTERS.warrior.diceTable[1].power;
+  assert.equal(result.boss.hp, 300 - (basePower + 5));
+});
+
+test('resolveEffects applies an active heal buff and an active defense buff', () => {
+  const healMap = { trunk: [{ type: 'heal' }, {}], branches: [] };
+  const healState = baseState({
+    map: healMap,
+    boss: { id: 'fireDragon', name: '炎竜', hp: 0, maxHp: 300 },
+    players: [
+      { id: 'healer', hp: 30, maxHp: 60, characterId: 'warrior', position: { track: 'trunk', index: 0 }, buffs: [{ type: 'heal', bonus: 4, remainingTurns: 2 }] },
+      { id: 'ally', hp: 5, maxHp: 60, characterId: 'mage', position: { track: 'trunk', index: 1 } },
+    ],
+  });
+  const healResult = resolveEffects(healState, {}, {}, () => 0.5);
+  const ally = healResult.players.find((p) => p.id === 'ally');
+  assert.equal(ally.hp, 5 + 8 + 4, 'base heal (8) plus the healer\'s +4 buff');
+
+  const defenseMap = { trunk: [{ type: 'defense' }], branches: [] };
+  const defenseState = baseState({
+    map: defenseMap,
+    players: [{
+      id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior',
+      position: { track: 'trunk', index: 0 },
+      buffs: [{ type: 'defense', bonus: 3, remainingTurns: 2 }],
+    }],
+  });
+  const defenseResult = resolveEffects(defenseState, {}, {}, () => 0.2, { p1: 4 }); // explicit defense roll of 4
+  assert.ok(defenseResult.log.some((entry) => entry.type === 'defense' && entry.amount === 4 + 3), 'defense amount should include the +3 buff');
+});
+
+test('resolveEffects ticks buff duration down each turn and expires it at zero, without ticking a buff granted this same turn', () => {
+  const map = { trunk: [{ type: 'attack' }], branches: [] }; // not an item cell, so no new buff is granted this turn
+  const state = baseState({
+    map,
+    boss: { id: 'fireDragon', name: '炎竜', hp: 0, maxHp: 300 },
+    players: [{
+      id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior',
+      position: { track: 'trunk', index: 0 },
+      buffs: [{ type: 'attack', bonus: 3, remainingTurns: 1 }],
+    }],
+  });
+  const result = resolveEffects(state, { p1: 1 }, {}, () => 0.5);
+  const p1 = result.players.find((p) => p.id === 'p1');
+  assert.deepEqual(p1.buffs, [], 'a buff at 1 remaining turn should expire after this turn ticks it to 0');
+});
+
+test('resolveEffects character specials: critical multiplies power, extraHit and bigMagic add a flat bonus, stealItem grants a buff without changing power', () => {
+  const critical = resolveEffects(
+    baseState({ map: { trunk: [{ type: 'attack' }], branches: [] }, boss: { id: 'fireDragon', name: '炎竜', hp: 300, maxHp: 300 }, players: [{ id: 'p1', hp: 60, maxHp: 60, characterId: 'warrior', position: { track: 'trunk', index: 0 } }] }),
+    { p1: 6 }, {}, () => 0.5,
+  );
+  const basePower = CHARACTERS.warrior.diceTable[6].power;
+  assert.equal(300 - critical.boss.hp, Math.round(basePower * 1.5));
+
+  const extraHit = resolveEffects(
+    baseState({ map: { trunk: [{ type: 'attack' }], branches: [] }, boss: { id: 'fireDragon', name: '炎竜', hp: 300, maxHp: 300 }, players: [{ id: 'p1', hp: 48, maxHp: 48, characterId: 'archer', position: { track: 'trunk', index: 0 } }] }),
+    { p1: 6 }, {}, () => 0.5,
+  );
+  assert.equal(300 - extraHit.boss.hp, CHARACTERS.archer.diceTable[6].power + 4);
+  assert.ok(extraHit.log.some((entry) => entry.type === 'special' && entry.special === 'extraHit'));
+
+  const bigMagic = resolveEffects(
+    baseState({ map: { trunk: [{ type: 'attack' }], branches: [] }, boss: { id: 'fireDragon', name: '炎竜', hp: 300, maxHp: 300 }, players: [{ id: 'p1', hp: 40, maxHp: 40, characterId: 'mage', position: { track: 'trunk', index: 0 } }] }),
+    { p1: 6 }, {}, () => 0.5,
+  );
+  assert.equal(300 - bigMagic.boss.hp, CHARACTERS.mage.diceTable[6].power + 6);
+
+  const stealItem = resolveEffects(
+    baseState({ map: { trunk: [{ type: 'attack' }], branches: [] }, boss: { id: 'fireDragon', name: '炎竜', hp: 300, maxHp: 300 }, players: [{ id: 'p1', hp: 44, maxHp: 44, characterId: 'thief', position: { track: 'trunk', index: 0 } }] }),
+    { p1: 6 }, {}, () => 0.5, {}, { p1: 5 },
+  );
+  assert.equal(300 - stealItem.boss.hp, CHARACTERS.thief.diceTable[6].power, 'stealItem should not change the damage dealt');
+  const p1 = stealItem.players.find((p) => p.id === 'p1');
+  const expectedBuff = rollItemBuff(5);
+  assert.deepEqual(p1.buffs, [{ type: expectedBuff.type, bonus: expectedBuff.bonus, remainingTurns: expectedBuff.duration }]);
+  assert.ok(stealItem.log.some((entry) => entry.type === 'special' && entry.special === 'stealItem'));
 });
 
 test('checkGameOver reports win when boss hp is 0', () => {

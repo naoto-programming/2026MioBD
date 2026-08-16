@@ -9,9 +9,35 @@ export function createCell(type) {
   return { type };
 }
 
+// 同じマス種が3つ以上連続しないようにする(体感で偏って見えるのを防ぐ)。
+// 完全ランダムだと統計的には妥当でも、プレイヤーの目には「同じマスばかり」と
+// 映りやすいための調整。rngが定数(テスト用)の場合はguardで打ち切り、
+// 元の(偏った)結果にフォールバックする。
+const MAX_STREAK = 2;
+
+function pickAvoidingStreak(recentTypes, pick) {
+  let type = pick();
+  let guard = 0;
+  while (
+    recentTypes.length >= MAX_STREAK &&
+    recentTypes.slice(-MAX_STREAK).every((t) => t === type) &&
+    guard < 6
+  ) {
+    type = pick();
+    guard += 1;
+  }
+  return type;
+}
+
 export function createInitialMap(rng = Math.random) {
   const trunk = [];
-  for (let i = 0; i < 20; i++) trunk.push(createCell(randomCellType(rng)));
+  const recent = [];
+  for (let i = 0; i < 20; i++) {
+    const type = pickAvoidingStreak(recent, () => randomCellType(rng));
+    trunk.push(createCell(type));
+    recent.push(type);
+    if (recent.length > MAX_STREAK) recent.shift();
+  }
   return { trunk, branches: [] };
 }
 
@@ -58,13 +84,25 @@ export function createBranch(id, theme, connectFromIndex, rng = Math.random) {
   const length = 15 + Math.floor(rng() * 6); // 15-20
   const weights = BRANCH_THEMES[theme];
   const cells = [];
-  for (let i = 0; i < length; i++) cells.push(createCell(weightedCellType(weights, rng)));
-  return { id, theme, connectFrom: connectFromIndex, connectTo: null, cells };
+  const recent = [];
+  for (let i = 0; i < length; i++) {
+    const type = pickAvoidingStreak(recent, () => weightedCellType(weights, rng));
+    cells.push(createCell(type));
+    recent.push(type);
+    if (recent.length > MAX_STREAK) recent.shift();
+  }
+  return { id, theme, connectFrom: connectFromIndex, connectTo: null, cells, length };
 }
 
 export function extendTrunk(map, targetLength, rng = Math.random) {
   const trunk = map.trunk.slice();
-  while (trunk.length < targetLength) trunk.push(createCell(randomCellType(rng)));
+  const recent = trunk.slice(-MAX_STREAK).map((c) => c.type);
+  while (trunk.length < targetLength) {
+    const type = pickAvoidingStreak(recent, () => randomCellType(rng));
+    trunk.push(createCell(type));
+    recent.push(type);
+    if (recent.length > MAX_STREAK) recent.shift();
+  }
   return { ...map, trunk };
 }
 
@@ -76,15 +114,37 @@ export function isBranchPoint(map, trunkIndex) {
   return branchesAt(map, trunkIndex).length > 0;
 }
 
+export function trimOldTrunkCells(map, playerPositions, keepBehind = 7) {
+  const trunkProgress = playerPositions
+    .filter((p) => p.track === 'trunk')
+    .map((p) => p.index);
+
+  if (trunkProgress.length === 0) {
+    return map;
+  }
+
+  const earliest = Math.min(...trunkProgress);
+  const keepFrom = Math.max(0, earliest - keepBehind);
+
+  if (keepFrom === 0) {
+    return map;
+  }
+
+  const trimmedTrunk = map.trunk.slice(keepFrom);
+  const offset = keepFrom;
+  const trimmedBranches = map.branches.map((branch) => ({
+    ...branch,
+    connectFrom: Math.max(0, branch.connectFrom - offset),
+    connectTo: branch.connectTo === null ? null : Math.max(0, branch.connectTo - offset),
+    cells: branch.cells.slice(),
+  }));
+
+  return { ...map, trunk: trimmedTrunk, branches: trimmedBranches };
+}
+
 const BRANCH_SPAWN_CHANCE = 0.08;
 
 export function ensureMapAhead(map, playerPositions, lookahead, rng = Math.random) {
-  // A player currently on a branch will guarantee-rejoin the trunk at that
-  // branch's connectTo, so their "future trunk position" for lookahead
-  // purposes is connectTo, not their (branch-track) index. Without this, if
-  // every player is on a branch, furthestTrunkIndex collapses to 0 and the
-  // trunk stops extending, leaving dangling branch.connectTo values pointing
-  // past the end of the trunk.
   const furthestTrunkIndex = playerPositions.reduce((max, p) => {
     if (p.track === 'trunk') return Math.max(max, p.index);
     const branch = map.branches.find((b) => b.id === p.track);
@@ -94,9 +154,6 @@ export function ensureMapAhead(map, playerPositions, lookahead, rng = Math.rando
   const targetLength = furthestTrunkIndex + lookahead + 1;
   let extended = extendTrunk(map, targetLength, rng);
   const branches = extended.branches.slice();
-  // Loop bound is captured once: the branch-spawn scan only considers indices
-  // that were "new" as of this call, even though `extended` may grow further
-  // below to make room for a late-spawning branch's connectTo.
   const scanEnd = extended.trunk.length;
 
   for (let i = map.trunk.length; i < scanEnd; i++) {
@@ -104,11 +161,9 @@ export function ensureMapAhead(map, playerPositions, lookahead, rng = Math.rando
     if (rng() < BRANCH_SPAWN_CHANCE) {
       const theme = BRANCH_THEME_NAMES[Math.floor(rng() * BRANCH_THEME_NAMES.length)];
       const branch = createBranch(`branch-${i}`, theme, i, rng);
-      const rawConnectTo = i + 5 + Math.floor(rng() * 5); // 5-9マス先で合流
-      // Guarantee connectFrom < connectTo <= trunk.length - 1 right now, at
-      // generation time, rather than clamping down into a degenerate branch
-      // that loops back to its own connectFrom when it spawns near the edge
-      // of the currently-generated trunk: grow the trunk to fit instead.
+      const branchLength = branch.cells.length;
+      const connectionDistance = branchLength + 5 + Math.floor(rng() * 6);
+      const rawConnectTo = i + connectionDistance;
       if (rawConnectTo >= extended.trunk.length) {
         extended = extendTrunk(extended, rawConnectTo + 1, rng);
       }
