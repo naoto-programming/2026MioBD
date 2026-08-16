@@ -1,17 +1,19 @@
-// ダメージは旧版のおよそ2倍(characters.jsのHP・威力とセットで調整済み)。
-// 1のみ「失敗」として据え置き、ミス演出を残す。
+// ダメージはcharacters.jsのHP引き上げ(平均250)に合わせて引き上げ済み。
+// 1のみ「失敗」として据え置き、ミス演出を残す。maxHpは変更なし
+// (avgDamagePerPlayerPerTurnとの関係はターン数・勝率に効くため、
+// 今回のHP変更とは独立に維持している)。
 export const BOSSES = {
   fireDragon: {
     id: 'fireDragon',
     name: '炎竜',
     maxHp: 130,
     diceTable: {
-      1: { name: '爪撃', damage: 8 },
-      2: { name: '火球', damage: 12 },
-      3: { name: '火球', damage: 12 },
-      4: { name: '咆哮', damage: 6 },
-      5: { name: '全体火炎', damage: 16 },
-      6: { name: '大火炎', damage: 28 },
+      1: { name: '爪撃', damage: 40 }, // rollBossAttackが1目を強制的に失敗(0)にするため実際には使われない
+      2: { name: '火球', damage: 60 },
+      3: { name: '火球', damage: 60 },
+      4: { name: '咆哮', damage: 30 },
+      5: { name: '全体火炎', damage: 85 },
+      6: { name: '大火炎', damage: 150 },
     },
   },
 };

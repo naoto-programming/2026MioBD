@@ -80,7 +80,8 @@ export function resolveMovement(state, moves, chooseBranchFns, rng = Math.random
 }
 
 const HEAL_RADIUS = 3;
-const HEAL_AMOUNT = 8;
+// 回復は出目に比例する(固定値ではない)。1目=12〜6目=72。
+const HEAL_PER_DIE = 12;
 
 function trackDistance(posA, posB) {
   if (posA.track !== posB.track) return Infinity;
@@ -155,7 +156,10 @@ export function resolveEffects(state, attackRolls = {}, damageRolls = {}, rngOrD
     const cell = getCell(state.map, player.position.track, player.position.index);
 
     if (cell.type === 'heal') {
-      const healAmount = HEAL_AMOUNT + buffBonusFor(player, 'heal');
+      // attackRollsは全マス種共通のロールチャンネルを流用している(mainからは
+      // 常に同じeffectRollsが渡される)。未指定時は最低目(1)にフォールバック。
+      const dieValue = attackRolls[player.id] ?? 1;
+      const healAmount = dieValue * HEAL_PER_DIE + buffBonusFor(player, 'heal');
       for (const target of players) {
         if (target.id === player.id) continue;
         if (trackDistance(player.position, target.position) <= HEAL_RADIUS) {

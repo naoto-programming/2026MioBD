@@ -135,6 +135,28 @@ test('resolveEffects heals players within radius 3 on the same track', () => {
   assert.equal(result.players.find((p) => p.id === 'far').hp, 5);
 });
 
+test('resolveEffects heal amount scales with the healer\'s die roll, not a fixed amount', () => {
+  const map = { trunk: [{ type: 'heal' }, {}], branches: [] };
+  const state = (dieValue) => baseState({
+    map,
+    boss: { id: 'fireDragon', name: '炎竜', hp: 0, maxHp: 300 },
+    players: [
+      { id: 'healer', hp: 300, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 } },
+      { id: 'ally', hp: 1, maxHp: 300, characterId: 'mage', position: { track: 'trunk', index: 1 } },
+    ],
+  });
+
+  const low = resolveEffects(state(), { healer: 1 }, {}, () => 0.5);
+  const high = resolveEffects(state(), { healer: 6 }, {}, () => 0.5);
+
+  const lowHeal = low.players.find((p) => p.id === 'ally').hp - 1;
+  const highHeal = high.players.find((p) => p.id === 'ally').hp - 1;
+
+  assert.equal(lowHeal, 1 * 12);
+  assert.equal(highHeal, 6 * 12);
+  assert.ok(highHeal > lowHeal, 'a higher die roll must heal for more than a lower one');
+});
+
 test('resolveEffects applies attack damage to the boss using character power', () => {
   const map = { trunk: [{ type: 'attack' }], branches: [] };
   const state = baseState({
@@ -250,7 +272,10 @@ test('resolveEffects suppresses attack for a player consuming skipNextEffect, an
   const state = baseState({
     map,
     boss: { id: 'fireDragon', name: '炎竜', hp: 300, maxHp: 300 },
-    players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, skipNextEffect: true }],
+    // hp well above any single boss hit so the boss-attack phase (which still
+    // fires this turn) doesn't incidentally kill/revive this player and
+    // confound the skipNextEffect assertion below.
+    players: [{ id: 'p1', hp: 300, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 }, skipNextEffect: true }],
   });
   const result = resolveEffects(state, { p1: 6 }, {}, () => 0.5);
   assert.equal(result.boss.hp, 300, 'attack should be suppressed, boss takes no damage');
@@ -261,11 +286,11 @@ test('resolveEffects suppresses defense for a player consuming skipNextEffect: t
   const map = { trunk: [{ type: 'defense' }], branches: [] };
   const state = baseState({
     map,
-    players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, skipNextEffect: true }],
+    players: [{ id: 'p1', hp: 300, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 }, skipNextEffect: true }],
   });
-  const result = resolveEffects(state, {}, {}, () => 0.2); // boss die face 2 -> 火球, damage 12
+  const result = resolveEffects(state, {}, {}, () => 0.2); // boss die face 2 -> 火球, damage 60
   const p1 = result.players.find((p) => p.id === 'p1');
-  assert.equal(p1.hp, 18, 'defense should be suppressed, so boss damage (12) still lands');
+  assert.equal(p1.hp, 240, 'defense should be suppressed, so boss damage (60) still lands');
   assert.equal(p1.skipNextEffect, false, 'flag should be cleared after being consumed');
 });
 
@@ -286,7 +311,9 @@ test('resolveEffects does not affect a player without skipNextEffect set (existi
   const map = { trunk: [{ type: 'attack' }], branches: [] };
   const state = baseState({
     map,
-    players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, skipNextEffect: false }],
+    // hp well above any single boss hit so this turn's boss-attack phase
+    // can't incidentally kill/revive this player.
+    players: [{ id: 'p1', hp: 300, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 }, skipNextEffect: false }],
   });
   const result = resolveEffects(state, { p1: 6 }, {}, () => 0.5);
   const expectedDamage = Math.round(CHARACTERS.warrior.diceTable[6].power * 1.5); // critical special
@@ -360,9 +387,9 @@ test('resolveEffects applies an active heal buff and an active defense buff', ()
       { id: 'ally', hp: 5, maxHp: 60, characterId: 'mage', position: { track: 'trunk', index: 1 } },
     ],
   });
-  const healResult = resolveEffects(healState, {}, {}, () => 0.5);
+  const healResult = resolveEffects(healState, { healer: 3 }, {}, () => 0.5);
   const ally = healResult.players.find((p) => p.id === 'ally');
-  assert.equal(ally.hp, 5 + 8 + 4, 'base heal (8) plus the healer\'s +4 buff');
+  assert.equal(ally.hp, 5 + 3 * 12 + 4, 'die value (3) x 12 per die, plus the healer\'s +4 buff');
 
   const defenseMap = { trunk: [{ type: 'defense' }], branches: [] };
   const defenseState = baseState({

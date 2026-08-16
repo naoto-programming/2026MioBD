@@ -536,13 +536,13 @@ function activeBuffBonus(player, type) {
   return player.buffs.filter((b) => b.type === type).reduce((sum, b) => sum + b.bonus, 0);
 }
 
-// HEAL_AMOUNTはengine.js側の定数と揃える(回復は出目に関係なく固定量)。
-const DISPLAY_HEAL_AMOUNT = 8;
+// engine.js側のHEAL_PER_DIEと揃える(回復量は出目 x この値 + バフ)。
+const HEAL_PER_DIE = 12;
 
 function describeCellEffect(player, cell, dieValue) {
   if (cell.type === 'heal') {
-    const amount = DISPLAY_HEAL_AMOUNT + activeBuffBonus(player, 'heal');
-    return `${player.name}のマスで${dieValue}目 → 回復: 周囲の味方を${amount}回復(出目は演出用、回復量は固定+バフ)`;
+    const amount = dieValue * HEAL_PER_DIE + activeBuffBonus(player, 'heal');
+    return `${player.name}のマスで${dieValue}目 → 回復: 周囲の味方を${amount}回復`;
   }
   if (cell.type === 'attack') {
     const result = rollCharacterAttack(player.characterId, dieValue);
@@ -581,15 +581,12 @@ function describeDieFaceTable(cellType, player) {
       { face: 6, value: '6ダメージ' },
     ],
     defense: [1, 2, 3, 4, 5, 6].map((face) => ({ face, value: `${face}軽減` })),
+    heal: [1, 2, 3, 4, 5, 6].map((face) => ({ face, value: `${face * HEAL_PER_DIE}回復` })),
     item: [1, 2, 3, 4, 5, 6].map((face) => {
       const buff = rollItemBuff(face);
       return { face, value: `${BUFF_TYPE_LABELS[buff.type]}+${buff.bonus}(${buff.duration}ターン)` };
     }),
   };
-
-  if (cellType === 'heal') {
-    return `<p class="die-face-note">回復マスは出目に関係なく固定量(${DISPLAY_HEAL_AMOUNT})+バフ。サイコロは演出用です。</p>`;
-  }
 
   const tableRows = (rows[cellType] ?? []).map(({ face, value }) => `
     <tr>

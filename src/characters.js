@@ -1,11 +1,12 @@
-// HPと威力はいずれも旧版のおよそ2倍(boss.jsのダメージ・avgDamagePerPlayerPerTurnと
-// セットで調整済み)。「HPを高くする代わりにボスのダメージも上げる」という方針により、
-// 1ヒットの数字が大きく・重く感じられるようにしつつ、ターン数は短縮する。
+// HPは4クラス平均が250になるよう再調整(300+260+230+210)/4=250。
+// 威力表・avgDamagePerPlayerPerTurnはこの回では変更しない(ターン数・勝率への
+// 影響はboss.jsのMonte Carloテストで確認済み)。ボス側のダメージはHPの上昇に
+// 合わせてboss.js側で引き上げてある。
 export const CHARACTERS = {
   warrior: {
     id: 'warrior',
     name: '剣士',
-    maxHp: 60,
+    maxHp: 300,
     diceTable: {
       1: { power: 6 },
       2: { power: 8 },
@@ -18,7 +19,7 @@ export const CHARACTERS = {
   archer: {
     id: 'archer',
     name: '弓士',
-    maxHp: 48,
+    maxHp: 260,
     diceTable: {
       1: { power: 6 },
       2: { power: 8 },
@@ -31,7 +32,7 @@ export const CHARACTERS = {
   thief: {
     id: 'thief',
     name: '盗賊',
-    maxHp: 44,
+    maxHp: 230,
     diceTable: {
       1: { power: 4 },
       2: { power: 6 },
@@ -44,7 +45,7 @@ export const CHARACTERS = {
   mage: {
     id: 'mage',
     name: '魔法使い',
-    maxHp: 40,
+    maxHp: 210,
     diceTable: {
       1: { power: 8 },
       2: { power: 10 },
