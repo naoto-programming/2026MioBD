@@ -157,6 +157,85 @@ test('resolveEffects revives a player who reaches 0 hp at half max hp', () => {
   assert.equal(p1.skipNextEffect, true);
 });
 
+test('resolveEffects suppresses heal for a player consuming skipNextEffect, and clears the flag afterward', () => {
+  const map = { trunk: [{ type: 'heal' }, {}, {}], branches: [] };
+  const state = baseState({
+    map,
+    boss: { id: 'fireDragon', name: '炎竜', hp: 0, maxHp: 300 }, // isolate from boss-attack phase
+    players: [
+      { id: 'healer', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, skipNextEffect: true },
+      { id: 'ally', hp: 5, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 1 }, skipNextEffect: false },
+    ],
+  });
+  const result = resolveEffects(state, {}, {}, () => 0.5);
+  assert.equal(result.players.find((p) => p.id === 'ally').hp, 5, 'heal should be suppressed, ally hp unchanged');
+  assert.equal(result.players.find((p) => p.id === 'healer').skipNextEffect, false, 'flag should be cleared after being consumed');
+});
+
+test('resolveEffects suppresses attack for a player consuming skipNextEffect, and clears the flag afterward', () => {
+  const map = { trunk: [{ type: 'attack' }], branches: [] };
+  const state = baseState({
+    map,
+    boss: { id: 'fireDragon', name: '炎竜', hp: 300, maxHp: 300 },
+    players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, skipNextEffect: true }],
+  });
+  const result = resolveEffects(state, { p1: 6 }, {}, () => 0.5);
+  assert.equal(result.boss.hp, 300, 'attack should be suppressed, boss takes no damage');
+  assert.equal(result.players.find((p) => p.id === 'p1').skipNextEffect, false, 'flag should be cleared after being consumed');
+});
+
+test('resolveEffects suppresses defense for a player consuming skipNextEffect: they still take boss damage, and the flag clears afterward', () => {
+  const map = { trunk: [{ type: 'defense' }], branches: [] };
+  const state = baseState({
+    map,
+    players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, skipNextEffect: true }],
+  });
+  const result = resolveEffects(state, {}, {}, () => 0); // rng=0 -> boss die face 1 (爪撃, damage 4)
+  const p1 = result.players.find((p) => p.id === 'p1');
+  assert.equal(p1.hp, 26, 'defense should be suppressed, so boss damage (4) still lands');
+  assert.equal(p1.skipNextEffect, false, 'flag should be cleared after being consumed');
+});
+
+test('resolveEffects suppresses damage-cell effect for a player consuming skipNextEffect, and clears the flag afterward', () => {
+  const map = { trunk: [{ type: 'damage' }], branches: [] };
+  const state = baseState({
+    map,
+    boss: { id: 'fireDragon', name: '炎竜', hp: 0, maxHp: 300 }, // isolate from boss-attack phase
+    players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, skipNextEffect: true }],
+  });
+  const result = resolveEffects(state, {}, { p1: 6 }, () => 0.5); // die 6 would normally deal 6 damage
+  const p1 = result.players.find((p) => p.id === 'p1');
+  assert.equal(p1.hp, 30, 'damage-cell effect should be suppressed, hp unchanged');
+  assert.equal(p1.skipNextEffect, false, 'flag should be cleared after being consumed');
+});
+
+test('resolveEffects does not affect a player without skipNextEffect set (existing behavior)', () => {
+  const map = { trunk: [{ type: 'attack' }], branches: [] };
+  const state = baseState({
+    map,
+    players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, skipNextEffect: false }],
+  });
+  const result = resolveEffects(state, { p1: 6 }, {}, () => 0.5);
+  assert.equal(result.boss.hp, 300 - 10, 'attack should apply normally when the flag is not set');
+  assert.equal(result.players.find((p) => p.id === 'p1').skipNextEffect, false);
+});
+
+test('resolveEffects freshly sets skipNextEffect for a player who is revived again in the same turn they consumed the old flag', () => {
+  // Edge case: a player consuming an old skipNextEffect this turn who also
+  // dies (again) this same turn must end up with the flag freshly true for
+  // their next turn, not accidentally cleared by the "consumed -> clear" path.
+  const map = { trunk: [{ type: 'item' }], branches: [] }; // no cell effect either way
+  const state = baseState({
+    map,
+    boss: { id: 'fireDragon', name: '炎竜', hp: 300, maxHp: 300 },
+    players: [{ id: 'p1', hp: 1, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, skipNextEffect: true }],
+  });
+  const result = resolveEffects(state, {}, {}, () => 0.999); // boss die face 6, damage 14, exceeds hp 1 -> dies again
+  const p1 = result.players.find((p) => p.id === 'p1');
+  assert.equal(p1.hp, 15); // maxHp/2
+  assert.equal(p1.skipNextEffect, true, 'should be freshly set for the new revival, not cleared');
+});
+
 test('checkGameOver reports win when boss hp is 0', () => {
   const result = checkGameOver({ turn: 1, turnLimit: 10, boss: { hp: 0 } });
   assert.deepEqual(result, { over: true, result: 'win' });

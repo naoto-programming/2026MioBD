@@ -80,8 +80,13 @@ export function resolveEffects(state, attackRolls, damageRolls, rng = Math.rando
   let boss = { ...state.boss };
   const log = [];
 
-  // 1. 回復
+  // 復活ペナルティ(前ターン以前に設定された分)を今ターン消費するプレイヤー。
+  // このターンの開始時点でのフラグを記録しておく(効果解決中に上書きされる前に)。
+  const skippingIds = new Set(players.filter((p) => p.skipNextEffect).map((p) => p.id));
+
+  // 1. 回復(自分の効果を無効化中のプレイヤーは回復の発生源にならない。対象にはなれる)
   for (const player of players) {
+    if (skippingIds.has(player.id)) continue;
     const cell = getCell(state.map, player.position.track, player.position.index);
     if (cell.type === 'heal') {
       for (const target of players) {
@@ -94,8 +99,9 @@ export function resolveEffects(state, attackRolls, damageRolls, rng = Math.rando
     }
   }
 
-  // 2. 攻撃
+  // 2. 攻撃(自分の効果を無効化中のプレイヤーは攻撃しない)
   for (const player of players) {
+    if (skippingIds.has(player.id)) continue;
     const cell = getCell(state.map, player.position.track, player.position.index);
     if (cell.type === 'attack') {
       const dieValue = attackRolls[player.id];
@@ -105,9 +111,11 @@ export function resolveEffects(state, attackRolls, damageRolls, rng = Math.rando
     }
   }
 
-  // 3. 防御(同一マスの味方も対象)
+  // 3. 防御(同一マスの味方も対象。自分の効果を無効化中のプレイヤーは防御の発生源にならない
+  //    が、同じマスにいる別プレイヤーの防御効果の対象にはなれる)
   const defendedPlayerIds = new Set();
   for (const player of players) {
+    if (skippingIds.has(player.id)) continue;
     const cell = getCell(state.map, player.position.track, player.position.index);
     if (cell.type === 'defense') {
       for (const target of players) {
@@ -119,7 +127,9 @@ export function resolveEffects(state, attackRolls, damageRolls, rng = Math.rando
   }
 
   // ダメージマス(防御は適用されない = プレイヤー自身のマス由来のダメージなので防御の対象外とする)
+  // 自分の効果を無効化中のプレイヤーはダメージマスの効果も受けない。
   for (const player of players) {
+    if (skippingIds.has(player.id)) continue;
     const cell = getCell(state.map, player.position.track, player.position.index);
     if (cell.type === 'damage') {
       const dieValue = damageRolls[player.id];
@@ -131,7 +141,8 @@ export function resolveEffects(state, attackRolls, damageRolls, rng = Math.rando
     }
   }
 
-  // 4. ボス攻撃(防御中のプレイヤーは無効)
+  // 4. ボス攻撃(防御中のプレイヤーは無効)。無効化ペナルティはマス効果のみが対象なので、
+  //    skipNextEffect中のプレイヤーも通常通りボス攻撃を受ける。
   if (boss.hp > 0) {
     const bossDie = rollDie(rng);
     const bossAttack = rollBossAttack(boss.id, bossDie);
@@ -143,11 +154,16 @@ export function resolveEffects(state, attackRolls, damageRolls, rng = Math.rando
     log.push({ type: 'bossAttack', name: bossAttack.name, damage: bossAttack.damage });
   }
 
-  // 死亡プレイヤーの即時復活(ペナルティ: HP半分・次の効果を1回無効化)
+  // 死亡プレイヤーの即時復活(ペナルティ: HP半分・次の効果を1回無効化)。
+  // 今ターン消費した無効化フラグはここでクリアするが、同ターン中に再度死亡・復活した
+  // プレイヤーは新しいペナルティとして true が再設定される(クリアと衝突しない)。
   players = players.map((p) => {
     if (p.hp <= 0) {
       log.push({ type: 'revive', target: p.id });
       return { ...p, hp: Math.floor(p.maxHp / 2), skipNextEffect: true };
+    }
+    if (skippingIds.has(p.id)) {
+      return { ...p, skipNextEffect: false };
     }
     return p;
   });
