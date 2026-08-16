@@ -158,6 +158,35 @@ test('checkGameOver reports not over otherwise', () => {
   assert.deepEqual(result, { over: false, result: null });
 });
 
+test('playTurn does not crash when a player exits a branch whose connectTo was left dangling past the trunk end', () => {
+  // Regression test for the branch-rejoin crash: a branch's connectTo could
+  // point past the current trunk length if it was never repaired by a later
+  // trunk extension (e.g. because every player was off the trunk). Exiting
+  // such a branch used to send the player to an undefined trunk cell, which
+  // then crashed resolveEffects when it dereferenced cell.type.
+  const state = {
+    turn: 0,
+    turnLimit: 10,
+    boss: { id: 'fireDragon', name: '炎竜', hp: 300, maxHp: 300 },
+    players: [
+      {
+        id: 'p1',
+        name: 'A',
+        characterId: 'warrior',
+        hp: 30,
+        maxHp: 30,
+        position: { track: 'b', index: 0 },
+        skipNextEffect: false,
+      },
+    ],
+    map: {
+      trunk: Array.from({ length: 25 }, () => ({ type: 'item' })), // max index 24
+      branches: [{ id: 'b', theme: 'heal', connectFrom: 5, connectTo: 30, cells: [{ type: 'item' }] }],
+    },
+  };
+  assert.doesNotThrow(() => playTurn(state, { p1: 1 }, {}, {}, {}, () => 0.5));
+});
+
 test('playTurn moves players, resolves effects, and advances the turn counter', () => {
   const state = createGameState(
     [{ id: 'p1', name: 'Alice', characterId: 'warrior' }],

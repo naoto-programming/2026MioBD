@@ -88,3 +88,52 @@ test('ensureMapAhead can spawn a branch and branchesAt/isBranchPoint reflect it'
   assert.ok(isBranchPoint(result, branch.connectFrom));
   assert.deepEqual(branchesAt(result, branch.connectFrom).map((b) => b.id), [branch.id]);
 });
+
+test('ensureMapAhead keeps extending the trunk when every player is currently on a branch', () => {
+  // Regression test: furthestTrunkIndex used to be computed by filtering to
+  // track === 'trunk' only, so if every player was off the trunk, the
+  // reduce's initial value of 0 won. That froze the trunk from ever growing
+  // again, leaving branch.connectTo values pointing past the end of the
+  // trunk once a player eventually exits their branch.
+  const map = { trunk: Array.from({ length: 25 }, () => ({ type: 'item' })), branches: [{ id: 'b', theme: 'heal', connectFrom: 5, connectTo: 22, cells: [{ type: 'item' }] }] };
+  const positions = [{ track: 'b', index: 0 }];
+  const result = ensureMapAhead(map, positions, 20, () => 0.99);
+  // furthest guaranteed future trunk index is the branch's connectTo (22),
+  // so the trunk should extend to at least connectTo + lookahead + 1 = 43.
+  assert.ok(result.trunk.length >= 22 + 20 + 1, `expected trunk to keep extending past connectTo, got length ${result.trunk.length}`);
+});
+
+test('ensureMapAhead always produces branches whose connectTo is strictly ahead of connectFrom and within the generated trunk', () => {
+  // Regression test for the branch-rejoin crash: connectTo must never point
+  // past the trunk that exists right now (not "eventually, once some later
+  // call repairs it"), and it must never collapse back onto connectFrom
+  // either (which would silently produce a branch that loops in place).
+  // Constant low rng guarantees a branch spawns at every new trunk index,
+  // including the very last one generated in this call -- the exact edge
+  // case where a naive clamp (Math.min(trunk.length - 1, ...)) degenerates
+  // into connectFrom === connectTo instead of extending the trunk to fit.
+  const map = createInitialMap(() => 0);
+  const positions = [{ track: 'trunk', index: 0 }];
+  const rng = () => 0.01;
+  const result = ensureMapAhead(map, positions, 20, rng);
+  assert.ok(result.branches.length > 0, 'expected at least one branch to spawn with this rng');
+  for (const branch of result.branches) {
+    assert.ok(branch.connectFrom < branch.connectTo, `branch ${branch.id}: connectFrom ${branch.connectFrom} must be < connectTo ${branch.connectTo}`);
+    assert.ok(branch.connectTo <= result.trunk.length - 1, `branch ${branch.id}: connectTo ${branch.connectTo} must be <= trunk.length - 1 (${result.trunk.length - 1})`);
+  }
+});
+
+test('getCell throws a descriptive error for an out-of-range trunk index instead of returning undefined', () => {
+  const map = createInitialMap(() => 0);
+  assert.throws(() => getCell(map, 'trunk', 999), /out of range/);
+});
+
+test('getCell throws a descriptive error for an out-of-range branch index instead of returning undefined', () => {
+  const map = { trunk: [{ type: 'item' }], branches: [{ id: 'b', theme: 'heal', connectFrom: 0, connectTo: 5, cells: [{ type: 'item' }] }] };
+  assert.throws(() => getCell(map, 'b', 999), /out of range/);
+});
+
+test('getCell throws a descriptive error for an unknown branch id', () => {
+  const map = { trunk: [{ type: 'item' }], branches: [] };
+  assert.throws(() => getCell(map, 'nonexistent-branch', 0), /no branch found/);
+});

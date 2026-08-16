@@ -16,9 +16,22 @@ export function createInitialMap(rng = Math.random) {
 }
 
 export function getCell(map, track, index) {
-  if (track === 'trunk') return map.trunk[index];
+  if (track === 'trunk') {
+    const cell = map.trunk[index];
+    if (cell === undefined) {
+      throw new Error(`getCell: trunk index ${index} is out of range (trunk length ${map.trunk.length})`);
+    }
+    return cell;
+  }
   const branch = map.branches.find((b) => b.id === track);
-  return branch.cells[index];
+  if (!branch) {
+    throw new Error(`getCell: no branch found with id ${track}`);
+  }
+  const cell = branch.cells[index];
+  if (cell === undefined) {
+    throw new Error(`getCell: branch ${track} index ${index} is out of range (branch length ${branch.cells.length})`);
+  }
+  return cell;
 }
 
 const BRANCH_THEMES = {
@@ -66,20 +79,40 @@ export function isBranchPoint(map, trunkIndex) {
 const BRANCH_SPAWN_CHANCE = 0.08;
 
 export function ensureMapAhead(map, playerPositions, lookahead, rng = Math.random) {
-  const furthestTrunkIndex = playerPositions
-    .filter((p) => p.track === 'trunk')
-    .reduce((max, p) => Math.max(max, p.index), 0);
+  // A player currently on a branch will guarantee-rejoin the trunk at that
+  // branch's connectTo, so their "future trunk position" for lookahead
+  // purposes is connectTo, not their (branch-track) index. Without this, if
+  // every player is on a branch, furthestTrunkIndex collapses to 0 and the
+  // trunk stops extending, leaving dangling branch.connectTo values pointing
+  // past the end of the trunk.
+  const furthestTrunkIndex = playerPositions.reduce((max, p) => {
+    if (p.track === 'trunk') return Math.max(max, p.index);
+    const branch = map.branches.find((b) => b.id === p.track);
+    return branch ? Math.max(max, branch.connectTo) : max;
+  }, 0);
 
   const targetLength = furthestTrunkIndex + lookahead + 1;
-  const extended = extendTrunk(map, targetLength, rng);
+  let extended = extendTrunk(map, targetLength, rng);
   const branches = extended.branches.slice();
+  // Loop bound is captured once: the branch-spawn scan only considers indices
+  // that were "new" as of this call, even though `extended` may grow further
+  // below to make room for a late-spawning branch's connectTo.
+  const scanEnd = extended.trunk.length;
 
-  for (let i = map.trunk.length; i < extended.trunk.length; i++) {
+  for (let i = map.trunk.length; i < scanEnd; i++) {
     if (isBranchPoint({ branches }, i)) continue;
     if (rng() < BRANCH_SPAWN_CHANCE) {
       const theme = BRANCH_THEME_NAMES[Math.floor(rng() * BRANCH_THEME_NAMES.length)];
       const branch = createBranch(`branch-${i}`, theme, i, rng);
-      branch.connectTo = i + 5 + Math.floor(rng() * 5); // 5-9マス先で合流
+      const rawConnectTo = i + 5 + Math.floor(rng() * 5); // 5-9マス先で合流
+      // Guarantee connectFrom < connectTo <= trunk.length - 1 right now, at
+      // generation time, rather than clamping down into a degenerate branch
+      // that loops back to its own connectFrom when it spawns near the edge
+      // of the currently-generated trunk: grow the trunk to fit instead.
+      if (rawConnectTo >= extended.trunk.length) {
+        extended = extendTrunk(extended, rawConnectTo + 1, rng);
+      }
+      branch.connectTo = rawConnectTo;
       branches.push(branch);
     }
   }
