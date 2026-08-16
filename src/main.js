@@ -11,7 +11,6 @@ let pendingMoves = {};
 let rollingDice = {};
 let effectRolls = {};
 let rollingEffectDice = {};
-let bossRolling = false;
 let phase = 'move';
 
 renderSetupScreen();
@@ -82,7 +81,6 @@ function startGame(selections) {
   pendingMoves = {};
   effectRolls = {};
   clearDiceIntervals();
-  bossRolling = false;
   phase = 'move';
   renderTurnScreen();
 }
@@ -95,7 +93,7 @@ function renderDiceTray(displayState = state, valueSet = 'move') {
     const bossSlot = document.createElement('div');
     bossSlot.className = 'dice-slot';
     const bossBox = document.createElement('div');
-    bossBox.className = `dice-box ${bossRolling ? 'rolling' : ''}`;
+    bossBox.className = 'dice-box';
     bossBox.textContent = String(displayState.boss.lastRoll);
     const bossLabel = document.createElement('span');
     bossLabel.className = 'dice-label';
@@ -141,51 +139,6 @@ function startDiceLoop(playerId, valueSet = 'move') {
   rollingState[playerId] = { interval };
 }
 
-function startBossDiceLoop() {
-  const bossBox = document.querySelector('.boss-dice-box');
-  if (!bossBox || bossRolling) return;
-  bossRolling = true;
-  bossBox.classList.add('rolling');
-  const interval = window.setInterval(() => {
-    const value = 1 + Math.floor(Math.random() * 6);
-    bossBox.textContent = value;
-  }, 110);
-  bossBox.dataset.intervalId = String(interval);
-}
-
-function stopBossDiceLoop(finalValue) {
-  const bossBox = document.querySelector('.boss-dice-box');
-  if (!bossBox) return;
-  const intervalId = Number(bossBox.dataset.intervalId || 0);
-  if (intervalId) window.clearInterval(intervalId);
-  bossBox.classList.remove('rolling');
-  bossBox.textContent = String(finalValue);
-  bossBox.dataset.intervalId = '';
-  bossRolling = false;
-  if (state?.boss) state.boss.lastRoll = finalValue;
-}
-
-function animateBossRoll(finalValue, durationMs = 1000) {
-  const bossBox = document.querySelector('.boss-dice-box');
-  if (!bossBox) return;
-
-  bossRolling = true;
-  bossBox.classList.add('rolling');
-  bossBox.textContent = String(1 + Math.floor(Math.random() * 6));
-  bossBox.dataset.intervalId = String(window.setInterval(() => {
-    bossBox.textContent = String(1 + Math.floor(Math.random() * 6));
-  }, 120));
-
-  window.setTimeout(() => {
-    const intervalId = Number(bossBox.dataset.intervalId || 0);
-    if (intervalId) window.clearInterval(intervalId);
-    bossBox.classList.remove('rolling');
-    bossBox.textContent = String(finalValue);
-    bossBox.dataset.intervalId = '';
-    bossRolling = false;
-    if (state?.boss) state.boss.lastRoll = finalValue;
-  }, durationMs);
-}
 
 function spinDice(playerId, finalValue, valueSet = 'move') {
   const box = document.querySelector(`.dice-box[data-player-id="${playerId}"]`);
@@ -600,6 +553,27 @@ function describeDieFaceTable(cellType, player) {
   `;
 }
 
+function describeBossDieFaceTable(bossId) {
+  const tableRows = [1, 2, 3, 4, 5, 6].map((face) => {
+    const result = rollBossAttack(bossId, face);
+    return `
+      <tr>
+        <td>${face}</td>
+        <td>${result.name}: ${result.damage}ダメージ</td>
+      </tr>
+    `;
+  }).join('');
+
+  return `
+    <table class="die-face-table">
+      <thead>
+        <tr><th>目</th><th>効果</th></tr>
+      </thead>
+      <tbody>${tableRows}</tbody>
+    </table>
+  `;
+}
+
 async function renderEffectRollScreen() {
   phase = 'effect';
   clearDiceIntervals();
@@ -664,23 +638,18 @@ async function renderEffectRollScreen() {
         effectRolls[player.id] = value;
         updateActivePlayerGlow(false);
 
+        // Keep showing the same table (with the confirmed die value locked
+        // into dieBox above) instead of swapping to a separate result-only
+        // popup -- the table stays visible so the roll can be read in
+        // context, for a fixed 2s before moving on.
         const resultText = describeCellEffect(player, cell, value);
         description.innerHTML = `
           <div class="die-face-summary">${cellKind}マス</div>
           ${describeDieFaceTable(cell.type, player)}
           <div class="die-face-result">→ ${resultText}</div>
         `;
-
-        const resultPopup = document.createElement('div');
-        resultPopup.className = 'turn-popup';
-        resultPopup.innerHTML = `
-          <h3>${player.name}</h3>
-          <div class="turn-popup-message">${resultText}</div>
-        `;
-        panel.innerHTML = '';
-        panel.appendChild(resultPopup.firstElementChild);
-        panel.appendChild(resultPopup.lastElementChild);
-        setTimeout(() => resolve(value), 700);
+        button.remove();
+        setTimeout(() => resolve(value), 2000);
       });
 
       panel.appendChild(heading);
@@ -768,27 +737,53 @@ async function resolveTurn() {
   state.boss.lastRoll = undefined;
   renderGame(state, app);
 
-  const bossBox = document.querySelector('.boss-dice-box');
-  if (bossBox) {
-    bossBox.classList.add('rolling');
-    bossBox.dataset.intervalId = '';
-  }
+  // ボスの技表を見せつつ出目を演出し、確定したらその出目を表と一緒に2秒表示する
+  // (プレイヤーの効果判定ポップアップと同じパターンに揃えてある)。
+  const bossOverlay = document.createElement('div');
+  bossOverlay.className = 'turn-popup-overlay';
+  const bossPanel = document.createElement('div');
+  bossPanel.className = 'turn-popup';
 
-  animateBossRoll(bossRollValue, 1200);
-  await new Promise((resolve) => window.setTimeout(resolve, 1400));
+  const bossHeading = document.createElement('h3');
+  bossHeading.textContent = `${state.boss.name}の攻撃`;
+
+  const bossDescription = document.createElement('div');
+  bossDescription.className = 'turn-popup-message';
+  bossDescription.innerHTML = `
+    <div class="die-face-summary">ボスの技</div>
+    ${describeBossDieFaceTable(state.boss.id)}
+  `;
+
+  const bossDieBox = document.createElement('div');
+  bossDieBox.className = 'dice-box rolling';
+  bossDieBox.style.fontSize = '2rem';
+  bossDieBox.style.margin = '0 auto 12px';
+  bossDieBox.textContent = '·';
+
+  bossPanel.appendChild(bossHeading);
+  bossPanel.appendChild(bossDescription);
+  bossPanel.appendChild(bossDieBox);
+  bossOverlay.appendChild(bossPanel);
+  app.appendChild(bossOverlay);
+
+  const bossIntervalId = window.setInterval(() => {
+    bossDieBox.textContent = String(1 + Math.floor(Math.random() * 6));
+  }, 100);
+  await new Promise((resolve) => window.setTimeout(resolve, 1000));
+  window.clearInterval(bossIntervalId);
+  bossDieBox.classList.remove('rolling');
+  bossDieBox.textContent = String(bossRollValue);
+  state.boss.lastRoll = bossRollValue;
 
   const bossAttack = rollBossAttack(state.boss.id, bossRollValue);
-  const attackPopup = document.createElement('div');
-  attackPopup.className = 'turn-popup-overlay';
-  attackPopup.innerHTML = `
-    <div class="turn-popup">
-      <h3>ボス攻撃</h3>
-      <div class="turn-popup-message">${bossAttack.name}: ${bossAttack.damage}ダメージ</div>
-    </div>
+  bossDescription.innerHTML = `
+    <div class="die-face-summary">ボスの技</div>
+    ${describeBossDieFaceTable(state.boss.id)}
+    <div class="die-face-result">→ ${bossAttack.name}: ${bossAttack.damage}ダメージ</div>
   `;
-  app.appendChild(attackPopup);
-  await new Promise((resolve) => window.setTimeout(resolve, 1200));
-  attackPopup.remove();
+
+  await new Promise((resolve) => window.setTimeout(resolve, 2000));
+  bossOverlay.remove();
 
   renderTurnScreen();
   requestAnimationFrame(() => focusBoardOnFrontPlayer());
