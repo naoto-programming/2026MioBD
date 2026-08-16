@@ -171,44 +171,68 @@ test('resolveEffects applies attack damage to the boss using character power', (
 });
 
 test('resolveEffects protects players on a defense cell and their co-located allies from boss damage', () => {
+  // rng=0.2 -> boss die face 2 (火球, damage 60), a real non-zero hit so this
+  // test actually exercises whether damage was blocked, not just coincidence
+  // (an earlier version of this test used a boss roll that always missed,
+  // so it passed regardless of whether blocking worked at all).
   const map = { trunk: [{ type: 'defense' }], branches: [] };
   const state = baseState({
     map,
     players: [
-      { id: 'defender', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 } },
-      { id: 'ally', hp: 30, maxHp: 30, characterId: 'mage', position: { track: 'trunk', index: 0 } },
+      { id: 'defender', hp: 300, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 } },
+      { id: 'ally', hp: 300, maxHp: 300, characterId: 'mage', position: { track: 'trunk', index: 0 } },
     ],
   });
-  const result = resolveEffects(state, {}, {}, () => 0); // rng=0 -> boss die face 1 (爪撃, damage 4)
-  assert.equal(result.players.find((p) => p.id === 'defender').hp, 30);
-  assert.equal(result.players.find((p) => p.id === 'ally').hp, 30);
+  const result = resolveEffects(state, {}, {}, () => 0.2, { defender: 6 });
+  const expectedReduction = 6 * 15; // defender's explicit roll of 6, DEFENSE_PER_DIE=15
+  assert.equal(result.players.find((p) => p.id === 'defender').hp, 300 - Math.max(0, 60 - expectedReduction));
+  assert.equal(result.players.find((p) => p.id === 'ally').hp, 300 - Math.max(0, 60 - expectedReduction), 'co-located ally should get the same reduction as the defender, without rolling themselves');
 });
 
-test('resolveEffects damage cell: die value 1-2 deals zero damage, otherwise damage equals die value', () => {
+test('resolveEffects extends defense to a co-located ally whose own turn is suppressed by skipNextEffect', () => {
+  // The scenario the co-location rule actually matters for: a revived player
+  // (skipping their own cell effect this turn) standing next to an active
+  // defender should still be shielded, the same way heal already works for a
+  // skipping ally at a heal cell.
+  const map = { trunk: [{ type: 'defense' }], branches: [] };
+  const state = baseState({
+    map,
+    players: [
+      { id: 'defender', hp: 300, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 } },
+      { id: 'skipper', hp: 300, maxHp: 300, characterId: 'mage', position: { track: 'trunk', index: 0 }, skipNextEffect: true },
+    ],
+  });
+  const result = resolveEffects(state, {}, {}, () => 0.2, { defender: 6 }); // boss face 2, damage 60
+  const expectedReduction = 6 * 15;
+  const skipper = result.players.find((p) => p.id === 'skipper');
+  assert.equal(skipper.hp, 300 - Math.max(0, 60 - expectedReduction), 'skipping player should still be protected by the co-located active defender');
+});
+
+test('resolveEffects damage cell: die value 1-2 deals zero damage, otherwise damage equals die value x DAMAGE_PER_DIE', () => {
   const map = { trunk: [{ type: 'damage' }], branches: [] };
   const lowRoll = resolveEffects(
     baseState({
       map,
       boss: { id: 'fireDragon', name: '炎竜', hp: 0, maxHp: 300 },
-      players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 } }],
+      players: [{ id: 'p1', hp: 300, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 } }],
     }),
     {},
     { p1: 2 },
     () => 0.99,
   );
-  assert.equal(lowRoll.players.find((p) => p.id === 'p1').hp, 30);
+  assert.equal(lowRoll.players.find((p) => p.id === 'p1').hp, 300);
 
   const highRoll = resolveEffects(
     baseState({
       map,
       boss: { id: 'fireDragon', name: '炎竜', hp: 0, maxHp: 300 },
-      players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 } }],
+      players: [{ id: 'p1', hp: 300, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 } }],
     }),
     {},
     { p1: 5 },
     () => 0.99,
   );
-  assert.equal(highRoll.players.find((p) => p.id === 'p1').hp, 25);
+  assert.equal(highRoll.players.find((p) => p.id === 'p1').hp, 300 - 5 * 10);
 });
 
 test('resolveEffects revives a player who reaches 0 hp at half max hp', () => {
@@ -301,7 +325,7 @@ test('resolveEffects suppresses damage-cell effect for a player consuming skipNe
     boss: { id: 'fireDragon', name: '炎竜', hp: 0, maxHp: 300 }, // isolate from boss-attack phase
     players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, skipNextEffect: true }],
   });
-  const result = resolveEffects(state, {}, { p1: 6 }, () => 0.5); // die 6 would normally deal 6 damage
+  const result = resolveEffects(state, {}, { p1: 6 }, () => 0.5); // die 6 would normally deal 60 damage (6 x DAMAGE_PER_DIE)
   const p1 = result.players.find((p) => p.id === 'p1');
   assert.equal(p1.hp, 30, 'damage-cell effect should be suppressed, hp unchanged');
   assert.equal(p1.skipNextEffect, false, 'flag should be cleared after being consumed');
@@ -401,7 +425,7 @@ test('resolveEffects applies an active heal buff and an active defense buff', ()
     }],
   });
   const defenseResult = resolveEffects(defenseState, {}, {}, () => 0.2, { p1: 4 }); // explicit defense roll of 4
-  assert.ok(defenseResult.log.some((entry) => entry.type === 'defense' && entry.amount === 4 + 3), 'defense amount should include the +3 buff');
+  assert.ok(defenseResult.log.some((entry) => entry.type === 'defense' && entry.amount === 4 * 15 + 3), 'defense amount should be die(4) x DEFENSE_PER_DIE(15) plus the +3 buff');
 });
 
 test('resolveEffects ticks buff duration down each turn and expires it at zero, without ticking a buff granted this same turn', () => {

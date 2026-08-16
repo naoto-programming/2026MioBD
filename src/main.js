@@ -332,7 +332,7 @@ function renderEventLogForState(displayState = state) {
     } else if (entry.type === 'damage') {
       text = `${getPlayerName(entry.target)}が${entry.amount}ダメージを受けた`;
     } else if (entry.type === 'defense') {
-      text = `${getPlayerName(entry.by)}の防御力上昇`;
+      text = `${getPlayerName(entry.by)}が守備+${entry.amount}(同じマスの仲間も対象)`;
     } else if (entry.type === 'bossAttack') {
       text = `${entry.name}: ボスが${getPlayerName(entry.target)}に${entry.damage}ダメージ`;
     } else if (entry.type === 'revive') {
@@ -536,8 +536,10 @@ function activeBuffBonus(player, type) {
   return player.buffs.filter((b) => b.type === type).reduce((sum, b) => sum + b.bonus, 0);
 }
 
-// engine.js側のHEAL_PER_DIEと揃える(回復量は出目 x この値 + バフ)。
+// engine.js側のHEAL_PER_DIE/DEFENSE_PER_DIEと揃える(出目 x この値 + バフ)。
 const HEAL_PER_DIE = 12;
+const DEFENSE_PER_DIE = 15;
+const DAMAGE_PER_DIE = 10;
 
 function describeCellEffect(player, cell, dieValue) {
   if (cell.type === 'heal') {
@@ -551,11 +553,11 @@ function describeCellEffect(player, cell, dieValue) {
     return `${player.name}のマスで${dieValue}目 → 攻撃: ${power}ダメージ${specialNote}`;
   }
   if (cell.type === 'defense') {
-    const reduction = dieValue + activeBuffBonus(player, 'defense');
-    return `${player.name}のマスで${dieValue}目 → 防御: ボスの攻撃を${reduction}軽減`;
+    const reduction = dieValue * DEFENSE_PER_DIE + activeBuffBonus(player, 'defense');
+    return `${player.name}のマスで${dieValue}目 → 防御: ボスの攻撃を${reduction}軽減(同じマスの仲間も対象)`;
   }
   if (cell.type === 'damage') {
-    const value = dieValue <= 2 ? 0 : dieValue;
+    const value = dieValue <= 2 ? 0 : dieValue * DAMAGE_PER_DIE;
     return `${player.name}のマスで${dieValue}目 → ダメージ: ${value}ダメージ`;
   }
   if (cell.type === 'item') {
@@ -572,15 +574,8 @@ function describeDieFaceTable(cellType, player) {
       const note = result.special ? `(${result.special})` : '';
       return { face, value: `${result.power}ダメージ${note}` };
     }),
-    damage: [
-      { face: 1, value: '0ダメージ' },
-      { face: 2, value: '0ダメージ' },
-      { face: 3, value: '3ダメージ' },
-      { face: 4, value: '4ダメージ' },
-      { face: 5, value: '5ダメージ' },
-      { face: 6, value: '6ダメージ' },
-    ],
-    defense: [1, 2, 3, 4, 5, 6].map((face) => ({ face, value: `${face}軽減` })),
+    damage: [1, 2, 3, 4, 5, 6].map((face) => ({ face, value: face <= 2 ? '0ダメージ' : `${face * DAMAGE_PER_DIE}ダメージ` })),
+    defense: [1, 2, 3, 4, 5, 6].map((face) => ({ face, value: `${face * DEFENSE_PER_DIE}軽減` })),
     heal: [1, 2, 3, 4, 5, 6].map((face) => ({ face, value: `${face * HEAL_PER_DIE}回復` })),
     item: [1, 2, 3, 4, 5, 6].map((face) => {
       const buff = rollItemBuff(face);

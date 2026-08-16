@@ -82,6 +82,13 @@ export function resolveMovement(state, moves, chooseBranchFns, rng = Math.random
 const HEAL_RADIUS = 3;
 // 回復は出目に比例する(固定値ではない)。1目=12〜6目=72。
 const HEAL_PER_DIE = 12;
+// 防御(軽減量)も出目に比例する。1目=15〜6目=90。ボスの1撃(30〜150)に対して
+// 意味のある軽減になるようheal同様の倍率制に揃えてある。
+const DEFENSE_PER_DIE = 15;
+// ダメージマスも同様に倍率制(1〜2目は0、3〜6目=30/40/50/60)。旧版は
+// 3〜6ダメージ固定だったが、HP平均250に対しては誤差レベルで意味を失っていたため
+// heal/defenseと同じ桁数になるよう引き上げた。
+const DAMAGE_PER_DIE = 10;
 
 function trackDistance(posA, posB) {
   if (posA.track !== posB.track) return Infinity;
@@ -185,16 +192,21 @@ export function resolveEffects(state, attackRolls = {}, damageRolls = {}, rngOrD
 
     if (cell.type === 'defense') {
       const hasExplicitRoll = Object.prototype.hasOwnProperty.call(defenseRolls, player.id);
-      const baseDefenseValue = hasExplicitRoll ? Number(defenseRolls[player.id]) : 20;
-      const defenseValue = baseDefenseValue + buffBonusFor(player, 'defense');
-      defendedPlayerIds.add(player.id);
-      defenseAmounts.set(player.id, (defenseAmounts.get(player.id) ?? 0) + defenseValue);
+      const dieValue = hasExplicitRoll ? Number(defenseRolls[player.id]) : 1;
+      const defenseValue = dieValue * DEFENSE_PER_DIE + buffBonusFor(player, 'defense');
+      // 止まったプレイヤー自身に加え、同じマスにいる仲間も防御対象にする
+      // (企画書の「同じマスにいるプレイヤーも防御対象になる」要件)。
+      for (const target of players) {
+        if (target.position.track !== player.position.track || target.position.index !== player.position.index) continue;
+        defendedPlayerIds.add(target.id);
+        defenseAmounts.set(target.id, (defenseAmounts.get(target.id) ?? 0) + defenseValue);
+      }
       log.push({ type: 'defense', by: player.id, amount: defenseValue });
     }
 
     if (cell.type === 'damage') {
       const dieValue = damageRolls[player.id] ?? 1;
-      const damage = dieValue <= 2 ? 0 : dieValue;
+      const damage = dieValue <= 2 ? 0 : dieValue * DAMAGE_PER_DIE;
       if (damage > 0) {
         player.hp = Math.max(0, player.hp - damage);
         log.push({ type: 'damage', target: player.id, amount: damage });
