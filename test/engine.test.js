@@ -302,26 +302,22 @@ test('Monte Carlo: simulated games win at a sane rate (regression guard for boss
   // deterministic PRNG and checks the outcome is not degenerate in either
   // direction.
   //
-  // Note on the band actually asserted below: turnLimit is derived from the
-  // same avgDamagePerPlayerPerTurn with a fixed 1.5x safety factor, and total
-  // player-turns granted (playerCount * turnLimit) comes out to ~375
-  // regardless of party size (the two scale inversely). Over that many
-  // independent attack-cell landings, the law of large numbers concentrates
-  // total damage tightly around its mean of ~1.5x the boss's HP, so the
-  // *true* win probability at this calibration is close to 99% (confirmed
-  // both analytically -- a normal-approximation z-score of ~2.8 -- and by
-  // simulation across party sizes 2/3/8 and both fixed and randomized
-  // character rosters, all landing in the 94-99% range). A [0.2, 0.9] band,
-  // as one might naively guess for "sane," is not actually achievable here
-  // without weakening the 1.5x safety factor or the avgDamagePerPlayerPerTurn
-  // value itself, both of which are out of scope for this fix (the review's
-  // instructions were explicit: this one constant, at this value, is the
-  // fix). So instead of a band that would fail against the very fix it's
-  // meant to protect, this test asserts wins and losses are both possible
-  // (i.e. the mechanic isn't degenerately deterministic in either direction)
-  // and that the win rate clears a wide floor -- comfortably below the ~99%
-  // this calibration actually produces, but nowhere near the ~0% the old,
-  // broken default produced.
+  // Note on the band actually asserted below: an earlier measurement taken
+  // right after calibrating avgDamagePerPlayerPerTurn (before the
+  // skipNextEffect death-penalty fix landed) showed win rates near 99%, and
+  // for a while this comment argued a tight band was unachievable. That
+  // measurement was stale -- skipNextEffect materially cuts player
+  // throughput (a revived player loses their own next-turn cell effect,
+  // including attacks), and the true win rate at this file's current state
+  // is ~70% on this exact seeded harness (measured range ~44-71% across
+  // party sizes 2-8). A [0.2, 0.9]-style band would in fact pass today. The
+  // assertion below is intentionally left as a wide floor rather than a
+  // tight band anyway, since re-deriving and re-pinning an exact band every
+  // time an unrelated mechanic shifts the simulated win rate is not worth
+  // the added flakiness risk -- the actual regression this test exists to
+  // catch is the calibration going back to ~0% (or to ~100%, i.e. becoming
+  // trivial), and the floor plus the wins>0/losses>0 checks below catch
+  // both directions without needing to track the exact rate.
   const GAMES = 100;
   const PLAYER_COUNT = 3;
   const CHARACTER_IDS = ['warrior', 'mage', 'archer'];
