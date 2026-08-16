@@ -1,0 +1,73 @@
+body {
+  font-family: system-ui, sans-serif;
+  background: #1b1f24;
+  color: #eee;
+  margin: 0;
+  padding: 1rem;
+}
+
+.boss-panel {
+  border: 1px solid #444;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.hp-bar {
+  background: #333;
+  border-radius: 4px;
+  height: 12px;
+  overflow: hidden;
+}
+
+.hp-bar-fill {
+  background: #c0392b;
+  height: 100%;
+}
+
+.board {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  padding: 0.5rem;
+  background: #262b31;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+
+.cell {
+  min-width: 2rem;
+  text-align: center;
+  padding: 0.25rem;
+  border-radius: 4px;
+}
+
+.cell.occupied {
+  background: #3a4a5c;
+}
+
+.players {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.player-card {
+  border: 1px solid #444;
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  min-width: 8rem;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.controls button {
+  padding: 0.5rem 0.75rem;
+}
