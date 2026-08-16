@@ -25,5 +25,12 @@ export function rollBossAttack(bossId, dieValue) {
 // 余裕を持たせた値で、safetyFactor(1.5)の安全マージンを実質的に保つために選んだ。
 // 将来バランス調整する際は、この値を再導出する必要はない。
 export function calculateTurnLimit(maxHp, playerCount, avgDamagePerPlayerPerTurn = 1.2, safetyFactor = 1.5) {
+  if (playerCount < 1) {
+    // A playerCount of 0 (e.g. from an unvalidated empty player-count input
+    // elsewhere) would silently divide by zero and produce Infinity instead
+    // of failing loudly, soft-locking the game with no dice buttons and no
+    // way to recover. Fail fast here instead.
+    throw new Error(`calculateTurnLimit: playerCount must be at least 1, got ${playerCount}`);
+  }
   return Math.ceil((maxHp / (playerCount * avgDamagePerPlayerPerTurn)) * safetyFactor);
 }

@@ -27,7 +27,7 @@ function renderSetupScreen() {
   const countInput = form.querySelector('#playerCount');
 
   function renderSlots() {
-    const count = Number(countInput.value);
+    const count = Math.min(8, Math.max(2, Number(countInput.value) || 2));
     slotsContainer.innerHTML = '';
     for (let i = 0; i < count; i++) {
       const row = document.createElement('div');
@@ -47,7 +47,7 @@ function renderSetupScreen() {
 
   form.addEventListener('submit', (event) => {
     event.preventDefault();
-    const count = Number(countInput.value);
+    const count = Math.min(8, Math.max(2, Number(countInput.value) || 2));
     const selections = [];
     for (let i = 0; i < count; i++) {
       selections.push({

@@ -24,3 +24,11 @@ test('calculateTurnLimit is a positive integer', () => {
   assert.ok(Number.isInteger(limit));
   assert.ok(limit > 0);
 });
+
+test('calculateTurnLimit throws a descriptive error for a playerCount below 1 instead of producing Infinity', () => {
+  // Regression guard: an unvalidated empty/zero player-count input elsewhere
+  // (e.g. Number("") === 0) used to silently divide by zero here, producing
+  // Infinity and soft-locking the game. This should fail loudly instead.
+  assert.throws(() => calculateTurnLimit(300, 0), /playerCount must be at least 1/);
+  assert.throws(() => calculateTurnLimit(300, -1), /playerCount must be at least 1/);
+});
