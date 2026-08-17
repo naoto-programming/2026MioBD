@@ -231,8 +231,9 @@ async function beginNewGuestPairing() {
     <p id="pairingStatus" class="turn-limit-hint">合言葉を発行しています…</p>
   `;
   app.appendChild(wrap);
-  const pending = { code: null, connection: null };
+  const pending = { code: null, connection: null, timeout: null };
   appendBackButton('キャンセル', () => {
+    if (pending.timeout) window.clearTimeout(pending.timeout);
     if (pending.code) net.clearRoom(pending.code);
     pending.connection?.close();
     renderHostLobbyScreen();
@@ -268,7 +269,19 @@ async function beginNewGuestPairing() {
     });
   };
 
+  // 合言葉は4桁(1万通り)しかなく、公開しっぱなしだと総当たりされ得る。
+  // 使わなくなったら早めに片付け、有効な時間を短く保つ。
+  pending.timeout = window.setTimeout(() => {
+    stopAwaitingAnswer?.();
+    stopAwaitingAnswer = null;
+    net.clearRoom(code);
+    connection.close();
+    alert('しばらく応答がなかったため、この合言葉は無効にしました。もう一度「ゲストを追加」からやり直してください。');
+    renderHostLobbyScreen();
+  }, 3 * 60 * 1000);
+
   stopAwaitingAnswer = net.awaitAnswer(code, async (answerText) => {
+    window.clearTimeout(pending.timeout);
     stopAwaitingAnswer = null;
     await net.acceptAnswer(connection, answerText);
     await net.clearRoom(code);

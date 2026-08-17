@@ -13,8 +13,7 @@
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 const ICE_GATHER_TIMEOUT_MS = 4000;
 
-// signaling-server/README.mdの手順でFirebaseプロジェクトを作ったら、
-// Realtime DatabaseのURLをここに設定する
+// Firebaseプロジェクトを作ったら、Realtime DatabaseのURLをここに設定する
 // (例: 'https://xxxx-default-rtdb.asia-southeast1.firebasedatabase.app')。
 const FIREBASE_DB_URL = '';
 
@@ -27,8 +26,25 @@ export function decodeSignal(text) {
   return { type: parsed.t === 'o' ? 'offer' : 'answer', sdp: parsed.s };
 }
 
-export function generateJoinCode(rng = Math.random) {
-  return String(Math.floor(rng() * 10000)).padStart(4, '0');
+// 合言葉は4桁(1万通り)しかなく総当たりされ得る空間なので、Math.randomではなく
+// Web Crypto(crypto.getRandomValues)由来の乱数を使う(予測困難性を上げる。
+// 剰余バイアスを避けるため棄却法を使う)。rngを明示的に渡した場合はテスト用の
+// 決定的な値として扱う。
+function cryptoRandomInt(maxExclusive) {
+  const maxUint32 = 0xffffffff;
+  const limit = maxUint32 - (maxUint32 % maxExclusive);
+  const buf = new Uint32Array(1);
+  let value;
+  do {
+    crypto.getRandomValues(buf);
+    value = buf[0];
+  } while (value >= limit);
+  return value % maxExclusive;
+}
+
+export function generateJoinCode(rng) {
+  const n = rng ? Math.floor(rng() * 10000) : cryptoRandomInt(10000);
+  return String(n).padStart(4, '0');
 }
 
 function roomPath(code, key) {
