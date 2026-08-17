@@ -1,6 +1,6 @@
-import { createInitialMap, ensureMapAhead, branchesAt, getCell } from './mapGenerator.js';
+import { createInitialMap, ensureMapAhead, trimOldTrunkCells, branchesAt, getCell } from './mapGenerator.js';
 import { CHARACTERS, rollCharacterAttack } from './characters.js';
-import { BOSSES, calculateTurnLimit, rollBossAttack } from './boss.js';
+import { BOSSES, calculateTargetedBalance, calculateTurnLimit, rollBossAttack } from './boss.js';
 
 export function rollDie(rng = Math.random) {
   return Math.min(6, Math.floor(rng() * 6) + 1);
@@ -17,25 +17,40 @@ export function sortPlayersByProgress(players, map) {
   return [...players].sort((a, b) => getPlayerProgressIndex(b, map) - getPlayerProgressIndex(a, map));
 }
 
-export function createGameState(playerSelections, bossId, rng = Math.random) {
-  const boss = BOSSES[bossId];
+// turnLimitOverride: これまでのターン数指定。targetMinutes が指定されればそれに
+// 優先順位が置かれ、プレイ時間からボス HP・プレイヤー HP・攻撃力・ターン数を逆算する。
+export function createGameState(playerSelections, bossId, rng = Math.random, turnLimitOverride = null, targetMinutes = null) {
+  const targetBalance = Number.isFinite(targetMinutes) && Number(targetMinutes) > 0
+    ? calculateTargetedBalance(playerSelections.length, Number(targetMinutes))
+    : null;
+  const boss = targetBalance ? BOSSES[targetBalance.bossId] ?? BOSSES[bossId] : BOSSES[bossId];
+
   const players = playerSelections.map((sel) => {
     const character = CHARACTERS[sel.characterId];
+    const hpScale = targetBalance ? targetBalance.playerHpScale : 1;
+    const maxHp = Math.round(character.maxHp * hpScale);
     return {
       id: sel.id,
       name: sel.name,
       characterId: sel.characterId,
-      hp: character.maxHp,
-      maxHp: character.maxHp,
+      hp: maxHp,
+      maxHp,
+      attackScale: targetBalance ? targetBalance.attackScale : 1,
       position: { track: 'trunk', index: 0 },
-      skipNextEffect: false,
+      restTurns: 0,
       buffs: [],
     };
   });
+
+  const turnLimit = Number.isInteger(turnLimitOverride) && turnLimitOverride > 0
+    ? turnLimitOverride
+    : (targetBalance ? targetBalance.turnLimit : calculateTurnLimit(boss.maxHp, players.length));
+  const bossHp = targetBalance ? targetBalance.bossHp : boss.maxHp;
+
   return {
     turn: 0,
-    turnLimit: calculateTurnLimit(boss.maxHp, players.length),
-    boss: { id: boss.id, name: boss.name, hp: boss.maxHp, maxHp: boss.maxHp },
+    turnLimit,
+    boss: { id: boss.id, name: boss.name, hp: bossHp, maxHp: bossHp },
     players,
     map: createInitialMap(rng),
   };
@@ -65,6 +80,10 @@ export function moveOnePlayer(map, position, steps, chooseBranch) {
   return { track, index };
 }
 
+// 最後尾のプレイヤーからこの値より後ろの幹マスは毎ターン削除する(エンドレス
+// マップがどこまでも肥大化しないようにするため)。
+const TRIM_KEEP_BEHIND = 5;
+
 export function resolveMovement(state, moves, chooseBranchFns, rng = Math.random) {
   const positions = state.players.map((p) => p.position);
   const map = ensureMapAhead(state.map, positions, 20, rng);
@@ -76,7 +95,14 @@ export function resolveMovement(state, moves, chooseBranchFns, rng = Math.random
     return { ...player, position };
   });
 
-  return { ...state, map, players };
+  const { map: trimmedMap, positions: trimmedPositions } = trimOldTrunkCells(
+    map,
+    players.map((p) => p.position),
+    TRIM_KEEP_BEHIND,
+  );
+  const trimmedPlayers = players.map((player, i) => ({ ...player, position: trimmedPositions[i] }));
+
+  return { ...state, map: trimmedMap, players: trimmedPlayers };
 }
 
 const HEAL_RADIUS = 3;
@@ -89,6 +115,12 @@ const DEFENSE_PER_DIE = 15;
 // 3〜6ダメージ固定だったが、HP平均250に対しては誤差レベルで意味を失っていたため
 // heal/defenseと同じ桁数になるよう引き上げた。
 const DAMAGE_PER_DIE = 10;
+// 死亡ペナルティ: 復活後に休み状態になるターン数(自分のマス効果が無効になる)。
+const DEATH_REST_TURNS = 3;
+// 死亡が発生するとボスのHPを少し回復させる(パーティが誰かを死なせることに
+// リスクを持たせるため)。maxHpに対する割合で定義し、複数人が同時に死亡した
+// 場合は死亡人数ぶん重ねて回復する。
+const DEATH_BOSS_HEAL_RATIO = 0.02;
 
 function trackDistance(posA, posB) {
   if (posA.track !== posB.track) return Infinity;
@@ -149,9 +181,9 @@ export function resolveEffects(state, attackRolls = {}, damageRolls = {}, rngOrD
   let boss = { ...state.boss, lastRoll: state.boss?.lastRoll ?? null };
   const log = [];
 
-  // 復活ペナルティ(前ターン以前に設定された分)を今ターン消費するプレイヤー。
-  // このターンの開始時点でのフラグを記録しておく(効果解決中に上書きされる前に)。
-  const skippingIds = new Set(players.filter((p) => p.skipNextEffect).map((p) => p.id));
+  // 休み状態(前ターン以前の死亡ペナルティ)が残っているプレイヤー。
+  // このターンの開始時点での状態を記録しておく(効果解決中に上書きされる前に)。
+  const skippingIds = new Set(players.filter((p) => p.restTurns > 0).map((p) => p.id));
 
   // 1. マス効果はプレイヤー順に順番に処理する。
   //    これにより、回復・攻撃・防御・ダメージの演出が一斉ではなく、個別の視点で見える。
@@ -166,7 +198,8 @@ export function resolveEffects(state, attackRolls = {}, damageRolls = {}, rngOrD
       // attackRollsは全マス種共通のロールチャンネルを流用している(mainからは
       // 常に同じeffectRollsが渡される)。未指定時は最低目(1)にフォールバック。
       const dieValue = attackRolls[player.id] ?? 1;
-      const healAmount = dieValue * HEAL_PER_DIE + buffBonusFor(player, 'heal');
+      const scale = player.attackScale ?? 1;
+      const healAmount = (dieValue * HEAL_PER_DIE + buffBonusFor(player, 'heal')) * scale;
       for (const target of players) {
         if (target.id === player.id) continue;
         if (trackDistance(player.position, target.position) <= HEAL_RADIUS) {
@@ -180,7 +213,8 @@ export function resolveEffects(state, attackRolls = {}, damageRolls = {}, rngOrD
     if (cell.type === 'attack') {
       const dieValue = attackRolls[player.id];
       const result = rollCharacterAttack(player.characterId, dieValue);
-      const buffedPower = result.power + buffBonusFor(player, 'attack');
+      const scale = player.attackScale ?? 1;
+      const buffedPower = (result.power * scale) + buffBonusFor(player, 'attack');
       const { power, grantedBuff } = applyCharacterSpecial(result.special, buffedPower, player, itemRolls, log);
       boss.hp = Math.max(0, boss.hp - power);
       log.push({ type: 'attack', by: player.id, damage: power, special: result.special ?? null });
@@ -193,7 +227,8 @@ export function resolveEffects(state, attackRolls = {}, damageRolls = {}, rngOrD
     if (cell.type === 'defense') {
       const hasExplicitRoll = Object.prototype.hasOwnProperty.call(defenseRolls, player.id);
       const dieValue = hasExplicitRoll ? Number(defenseRolls[player.id]) : 1;
-      const defenseValue = dieValue * DEFENSE_PER_DIE + buffBonusFor(player, 'defense');
+      const scale = player.attackScale ?? 1;
+      const defenseValue = (dieValue * DEFENSE_PER_DIE + buffBonusFor(player, 'defense')) * scale;
       // 止まったプレイヤー自身に加え、同じマスにいる仲間も防御対象にする
       // (企画書の「同じマスにいるプレイヤーも防御対象になる」要件)。
       for (const target of players) {
@@ -206,7 +241,8 @@ export function resolveEffects(state, attackRolls = {}, damageRolls = {}, rngOrD
 
     if (cell.type === 'damage') {
       const dieValue = damageRolls[player.id] ?? 1;
-      const damage = dieValue <= 2 ? 0 : dieValue * DAMAGE_PER_DIE;
+      const scale = player.attackScale ?? 1;
+      const damage = dieValue <= 2 ? 0 : dieValue * DAMAGE_PER_DIE * scale;
       if (damage > 0) {
         player.hp = Math.max(0, player.hp - damage);
         log.push({ type: 'damage', target: player.id, amount: damage });
@@ -239,16 +275,19 @@ export function resolveEffects(state, attackRolls = {}, damageRolls = {}, rngOrD
     }
   }
 
-  // 死亡プレイヤーの即時復活(ペナルティ: HP半分・次の効果を1回無効化)。
-  // 今ターン消費した無効化フラグはここでクリアするが、同ターン中に再度死亡・復活した
-  // プレイヤーは新しいペナルティとして true が再設定される(クリアと衝突しない)。
+  // 死亡プレイヤーの即時復活(ペナルティ: HP半分・DEATH_REST_TURNSターン休み)。
+  // 死亡するとボスのHPも少し回復する(複数人同時死亡なら人数ぶん重ねて回復)。
+  // 今ターン消費した休みカウントはここで1減らすが、同ターン中に再度死亡・復活した
+  // プレイヤーは新しいペナルティとしてDEATH_REST_TURNSが再設定される(減算と衝突しない)。
   players = players.map((p) => {
     if (p.hp <= 0) {
-      log.push({ type: 'revive', target: p.id });
-      return { ...p, hp: Math.floor(p.maxHp / 2), skipNextEffect: true };
+      const bossHeal = Math.round(boss.maxHp * DEATH_BOSS_HEAL_RATIO);
+      boss.hp = Math.min(boss.maxHp, boss.hp + bossHeal);
+      log.push({ type: 'death', target: p.id, restTurns: DEATH_REST_TURNS, bossHeal });
+      return { ...p, hp: Math.floor(p.maxHp / 2), restTurns: DEATH_REST_TURNS };
     }
     if (skippingIds.has(p.id)) {
-      return { ...p, skipNextEffect: false };
+      return { ...p, restTurns: Math.max(0, p.restTurns - 1) };
     }
     return p;
   });

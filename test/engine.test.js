@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { rollDie, createGameState, moveOnePlayer, resolveMovement, resolveEffects, checkGameOver, playTurn, sortPlayersByProgress, rollItemBuff } from '../src/engine.js';
 import { computeBoardWindowRange } from '../src/render.js';
-import { BOSSES } from '../src/boss.js';
+import { BOSSES, calculateTurnLimit } from '../src/boss.js';
 import { CHARACTERS } from '../src/characters.js';
 
 // Deterministic seeded PRNG (mulberry32) so the Monte Carlo balance test below
@@ -40,6 +40,22 @@ test('createGameState sets up players, boss, turnLimit and initial map', () => {
   assert.equal(state.players[0].hp, state.players[0].maxHp);
   assert.deepEqual(state.players[0].position, { track: 'trunk', index: 0 });
   assert.equal(state.map.trunk.length, 20);
+});
+
+test('createGameState uses turnLimitOverride when given a valid positive integer, and falls back to the calculated value otherwise', () => {
+  const selections = [{ id: 'p1', name: 'Alice', characterId: 'warrior' }];
+  const overridden = createGameState(selections, 'fireDragon', () => 0.5, 42);
+  assert.equal(overridden.turnLimit, 42);
+
+  const zero = createGameState(selections, 'fireDragon', () => 0.5, 0);
+  const negative = createGameState(selections, 'fireDragon', () => 0.5, -5);
+  const fractional = createGameState(selections, 'fireDragon', () => 0.5, 12.5);
+  const missing = createGameState(selections, 'fireDragon', () => 0.5);
+  const calculated = calculateTurnLimit(BOSSES.fireDragon.maxHp, 1);
+  assert.equal(zero.turnLimit, calculated, 'zero is not a valid override');
+  assert.equal(negative.turnLimit, calculated, 'a negative override is invalid');
+  assert.equal(fractional.turnLimit, calculated, 'a non-integer override is invalid');
+  assert.equal(missing.turnLimit, calculated, 'omitting the override uses the calculated default');
 });
 
 test('sortPlayersByProgress keeps the furthest player first even when earlier in array order', () => {
@@ -100,10 +116,13 @@ test('resolveMovement moves every player and extends the map ahead', () => {
     () => 0.5,
   );
   const moved = resolveMovement(state, { p1: 6 }, {}, () => 0.5);
-  assert.deepEqual(moved.players[0].position, { track: 'trunk', index: 6 });
   // ensureMapAhead extends based on pre-move positions (furthest index 0) with
-  // lookahead 20 -> target length 21, comfortably past the post-move index 6.
-  assert.equal(moved.map.trunk.length, 21);
+  // lookahead 20 -> target length 21 before trimming. After moving to index 6,
+  // trimOldTrunkCells (keepBehind=5) removes indices 0-1 (removal threshold
+  // 6-5=1, so indices <= 1 go), shifting everything by offset 2: trunk length
+  // 21-2=19, and the player's index becomes 6-2=4.
+  assert.deepEqual(moved.players[0].position, { track: 'trunk', index: 4 });
+  assert.equal(moved.map.trunk.length, 19);
 });
 
 function baseState(overrides = {}) {
@@ -171,10 +190,11 @@ test('resolveEffects applies attack damage to the boss using character power', (
 });
 
 test('resolveEffects protects players on a defense cell and their co-located allies from boss damage', () => {
-  // rng=0.2 -> boss die face 2 (火球, damage 60), a real non-zero hit so this
+  // rng=0.2 -> boss die face 2 (火球, damage 12), a real non-zero hit so this
   // test actually exercises whether damage was blocked, not just coincidence
   // (an earlier version of this test used a boss roll that always missed,
-  // so it passed regardless of whether blocking worked at all).
+  // so it passed regardless of whether blocking worked at all). A full roll
+  // of 6 (reduction 90) comfortably exceeds the hit, fully blocking it.
   const map = { trunk: [{ type: 'defense' }], branches: [] };
   const state = baseState({
     map,
@@ -185,27 +205,27 @@ test('resolveEffects protects players on a defense cell and their co-located all
   });
   const result = resolveEffects(state, {}, {}, () => 0.2, { defender: 6 });
   const expectedReduction = 6 * 15; // defender's explicit roll of 6, DEFENSE_PER_DIE=15
-  assert.equal(result.players.find((p) => p.id === 'defender').hp, 300 - Math.max(0, 60 - expectedReduction));
-  assert.equal(result.players.find((p) => p.id === 'ally').hp, 300 - Math.max(0, 60 - expectedReduction), 'co-located ally should get the same reduction as the defender, without rolling themselves');
+  assert.equal(result.players.find((p) => p.id === 'defender').hp, 300 - Math.max(0, 12 - expectedReduction));
+  assert.equal(result.players.find((p) => p.id === 'ally').hp, 300 - Math.max(0, 12 - expectedReduction), 'co-located ally should get the same reduction as the defender, without rolling themselves');
 });
 
-test('resolveEffects extends defense to a co-located ally whose own turn is suppressed by skipNextEffect', () => {
+test('resolveEffects extends defense to a co-located ally whose own turn is suppressed while resting', () => {
   // The scenario the co-location rule actually matters for: a revived player
-  // (skipping their own cell effect this turn) standing next to an active
-  // defender should still be shielded, the same way heal already works for a
-  // skipping ally at a heal cell.
+  // (resting, so their own cell effect is suppressed this turn) standing
+  // next to an active defender should still be shielded, the same way heal
+  // already works for a resting ally at a heal cell.
   const map = { trunk: [{ type: 'defense' }], branches: [] };
   const state = baseState({
     map,
     players: [
       { id: 'defender', hp: 300, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 } },
-      { id: 'skipper', hp: 300, maxHp: 300, characterId: 'mage', position: { track: 'trunk', index: 0 }, skipNextEffect: true },
+      { id: 'skipper', hp: 300, maxHp: 300, characterId: 'mage', position: { track: 'trunk', index: 0 }, restTurns: 2 },
     ],
   });
-  const result = resolveEffects(state, {}, {}, () => 0.2, { defender: 6 }); // boss face 2, damage 60
+  const result = resolveEffects(state, {}, {}, () => 0.2, { defender: 6 }); // boss face 2, damage 12
   const expectedReduction = 6 * 15;
   const skipper = result.players.find((p) => p.id === 'skipper');
-  assert.equal(skipper.hp, 300 - Math.max(0, 60 - expectedReduction), 'skipping player should still be protected by the co-located active defender');
+  assert.equal(skipper.hp, 300 - Math.max(0, 12 - expectedReduction), 'skipping player should still be protected by the co-located active defender');
 });
 
 test('resolveEffects damage cell: die value 1-2 deals zero damage, otherwise damage equals die value x DAMAGE_PER_DIE', () => {
@@ -235,7 +255,7 @@ test('resolveEffects damage cell: die value 1-2 deals zero damage, otherwise dam
   assert.equal(highRoll.players.find((p) => p.id === 'p1').hp, 300 - 5 * 10);
 });
 
-test('resolveEffects revives a player who reaches 0 hp at half max hp', () => {
+test('resolveEffects revives a player who reaches 0 hp at half max hp and sets a 3-turn rest', () => {
   // cell type 'item' is intentionally not handled by resolveEffects (no-op),
   // so only the boss attack phase affects this player's hp.
   const map = { trunk: [{ type: 'item' }], branches: [] };
@@ -244,10 +264,11 @@ test('resolveEffects revives a player who reaches 0 hp at half max hp', () => {
     boss: { id: 'fireDragon', name: '炎竜', hp: 300, maxHp: 300 },
     players: [{ id: 'p1', hp: 1, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 } }],
   });
-  const result = resolveEffects(state, {}, {}, () => 0.999); // boss die face 6, damage 14, exceeds hp 1
+  const result = resolveEffects(state, {}, {}, () => 0.999); // boss die face 6 (大火炎, damage 70), exceeds hp 1
   const p1 = result.players.find((p) => p.id === 'p1');
   assert.equal(p1.hp, 15); // maxHp/2
-  assert.equal(p1.skipNextEffect, true);
+  assert.equal(p1.restTurns, 3, 'DEATH_REST_TURNS');
+  assert.ok(result.log.some((entry) => entry.type === 'death' && entry.target === 'p1'), 'a death message should be logged');
 });
 
 test('resolveEffects records the boss die roll in the state so the UI can animate it', () => {
@@ -276,89 +297,104 @@ test('resolveEffects treats a boss roll of 1 as a failed attack with no damage',
   assert.equal(result.players[0].hp, 30);
 });
 
-test('resolveEffects suppresses heal for a player consuming skipNextEffect, and clears the flag afterward', () => {
+test('resolveEffects suppresses heal for a resting player (restTurns=1) and clears it to 0 afterward', () => {
   const map = { trunk: [{ type: 'heal' }, {}, {}], branches: [] };
   const state = baseState({
     map,
     boss: { id: 'fireDragon', name: '炎竜', hp: 0, maxHp: 300 }, // isolate from boss-attack phase
     players: [
-      { id: 'healer', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, skipNextEffect: true },
-      { id: 'ally', hp: 5, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 1 }, skipNextEffect: false },
+      { id: 'healer', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, restTurns: 1 },
+      { id: 'ally', hp: 5, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 1 }, restTurns: 0 },
     ],
   });
   const result = resolveEffects(state, {}, {}, () => 0.5);
   assert.equal(result.players.find((p) => p.id === 'ally').hp, 5, 'heal should be suppressed, ally hp unchanged');
-  assert.equal(result.players.find((p) => p.id === 'healer').skipNextEffect, false, 'flag should be cleared after being consumed');
+  assert.equal(result.players.find((p) => p.id === 'healer').restTurns, 0, 'rest count should reach 0 after being consumed');
 });
 
-test('resolveEffects suppresses attack for a player consuming skipNextEffect, and clears the flag afterward', () => {
+test('resolveEffects suppresses attack for a resting player (restTurns=1) and clears it to 0 afterward', () => {
   const map = { trunk: [{ type: 'attack' }], branches: [] };
   const state = baseState({
     map,
     boss: { id: 'fireDragon', name: '炎竜', hp: 300, maxHp: 300 },
     // hp well above any single boss hit so the boss-attack phase (which still
     // fires this turn) doesn't incidentally kill/revive this player and
-    // confound the skipNextEffect assertion below.
-    players: [{ id: 'p1', hp: 300, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 }, skipNextEffect: true }],
+    // confound the restTurns assertion below.
+    players: [{ id: 'p1', hp: 300, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 }, restTurns: 1 }],
   });
   const result = resolveEffects(state, { p1: 6 }, {}, () => 0.5);
   assert.equal(result.boss.hp, 300, 'attack should be suppressed, boss takes no damage');
-  assert.equal(result.players.find((p) => p.id === 'p1').skipNextEffect, false, 'flag should be cleared after being consumed');
+  assert.equal(result.players.find((p) => p.id === 'p1').restTurns, 0, 'rest count should reach 0 after being consumed');
 });
 
-test('resolveEffects suppresses defense for a player consuming skipNextEffect: they still take boss damage, and the flag clears afterward', () => {
+test('resolveEffects suppresses defense for a resting player (restTurns=1): they still take boss damage, and rest clears to 0 afterward', () => {
   const map = { trunk: [{ type: 'defense' }], branches: [] };
   const state = baseState({
     map,
-    players: [{ id: 'p1', hp: 300, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 }, skipNextEffect: true }],
+    players: [{ id: 'p1', hp: 300, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 }, restTurns: 1 }],
   });
-  const result = resolveEffects(state, {}, {}, () => 0.2); // boss die face 2 -> 火球, damage 60
+  const result = resolveEffects(state, {}, {}, () => 0.2); // boss die face 2 -> 火球, damage 12
   const p1 = result.players.find((p) => p.id === 'p1');
-  assert.equal(p1.hp, 240, 'defense should be suppressed, so boss damage (60) still lands');
-  assert.equal(p1.skipNextEffect, false, 'flag should be cleared after being consumed');
+  assert.equal(p1.hp, 288, 'defense should be suppressed, so boss damage (12) still lands');
+  assert.equal(p1.restTurns, 0, 'rest count should reach 0 after being consumed');
 });
 
-test('resolveEffects suppresses damage-cell effect for a player consuming skipNextEffect, and clears the flag afterward', () => {
+test('resolveEffects suppresses damage-cell effect for a resting player (restTurns=1) and clears it to 0 afterward', () => {
   const map = { trunk: [{ type: 'damage' }], branches: [] };
   const state = baseState({
     map,
     boss: { id: 'fireDragon', name: '炎竜', hp: 0, maxHp: 300 }, // isolate from boss-attack phase
-    players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, skipNextEffect: true }],
+    players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, restTurns: 1 }],
   });
   const result = resolveEffects(state, {}, { p1: 6 }, () => 0.5); // die 6 would normally deal 60 damage (6 x DAMAGE_PER_DIE)
   const p1 = result.players.find((p) => p.id === 'p1');
   assert.equal(p1.hp, 30, 'damage-cell effect should be suppressed, hp unchanged');
-  assert.equal(p1.skipNextEffect, false, 'flag should be cleared after being consumed');
+  assert.equal(p1.restTurns, 0, 'rest count should reach 0 after being consumed');
 });
 
-test('resolveEffects does not affect a player without skipNextEffect set (existing behavior)', () => {
+test('resolveEffects decrements restTurns by 1 per turn without fully clearing it before the rest period ends', () => {
+  // The specific behavior requested: dying costs 3 turns of rest, not 1 --
+  // one turn of suppression should only tick restTurns down by 1, not to 0.
+  const map = { trunk: [{ type: 'attack' }], branches: [] };
+  const state = baseState({
+    map,
+    boss: { id: 'fireDragon', name: '炎竜', hp: 0, maxHp: 300 },
+    players: [{ id: 'p1', hp: 300, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 }, restTurns: 3 }],
+  });
+  const result = resolveEffects(state, { p1: 6 }, {}, () => 0.5);
+  const p1 = result.players.find((p) => p.id === 'p1');
+  assert.equal(p1.restTurns, 2, 'one turn of rest consumed, two remain');
+  assert.equal(result.boss.hp, 0, 'attack should still be suppressed while resting');
+});
+
+test('resolveEffects does not affect a player with restTurns=0 (existing behavior)', () => {
   const map = { trunk: [{ type: 'attack' }], branches: [] };
   const state = baseState({
     map,
     // hp well above any single boss hit so this turn's boss-attack phase
     // can't incidentally kill/revive this player.
-    players: [{ id: 'p1', hp: 300, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 }, skipNextEffect: false }],
+    players: [{ id: 'p1', hp: 300, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 }, restTurns: 0 }],
   });
   const result = resolveEffects(state, { p1: 6 }, {}, () => 0.5);
   const expectedDamage = Math.round(CHARACTERS.warrior.diceTable[6].power * 1.5); // critical special
-  assert.equal(result.boss.hp, 300 - expectedDamage, 'attack should apply normally when the flag is not set');
-  assert.equal(result.players.find((p) => p.id === 'p1').skipNextEffect, false);
+  assert.equal(result.boss.hp, 300 - expectedDamage, 'attack should apply normally when not resting');
+  assert.equal(result.players.find((p) => p.id === 'p1').restTurns, 0);
 });
 
-test('resolveEffects freshly sets skipNextEffect for a player who is revived again in the same turn they consumed the old flag', () => {
-  // Edge case: a player consuming an old skipNextEffect this turn who also
-  // dies (again) this same turn must end up with the flag freshly true for
-  // their next turn, not accidentally cleared by the "consumed -> clear" path.
+test('resolveEffects freshly resets restTurns for a player who dies again in the same turn their old rest was about to be consumed', () => {
+  // Edge case: a player consuming the last turn of an old rest period who
+  // also dies (again) this same turn must end up with restTurns freshly
+  // reset to 3 for their next turns, not decremented by the "consumed" path.
   const map = { trunk: [{ type: 'item' }], branches: [] }; // no cell effect either way
   const state = baseState({
     map,
     boss: { id: 'fireDragon', name: '炎竜', hp: 300, maxHp: 300 },
-    players: [{ id: 'p1', hp: 1, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, skipNextEffect: true }],
+    players: [{ id: 'p1', hp: 1, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, restTurns: 1 }],
   });
-  const result = resolveEffects(state, {}, {}, () => 0.999); // boss die face 6, damage 14, exceeds hp 1 -> dies again
+  const result = resolveEffects(state, {}, {}, () => 0.999); // boss die face 6 (大火炎, damage 70), exceeds hp 1 -> dies again
   const p1 = result.players.find((p) => p.id === 'p1');
   assert.equal(p1.hp, 15); // maxHp/2
-  assert.equal(p1.skipNextEffect, true, 'should be freshly set for the new revival, not cleared');
+  assert.equal(p1.restTurns, 3, 'should be freshly reset for the new death, not decremented from the old rest');
 });
 
 test('rollItemBuff maps every die face to a positive bonus and duration', () => {
@@ -389,8 +425,10 @@ test('resolveEffects applies an active attack buff on top of character power', (
   const state = baseState({
     boss: { id: 'fireDragon', name: '炎竜', hp: 300, maxHp: 300 },
     map,
+    // hp well above any single boss hit so this turn's boss-attack phase
+    // can't incidentally kill/revive/heal-the-boss and confound the assertion.
     players: [{
-      id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior',
+      id: 'p1', hp: 300, maxHp: 300, characterId: 'warrior',
       position: { track: 'trunk', index: 0 },
       buffs: [{ type: 'attack', bonus: 5, remainingTurns: 2 }],
     }],
@@ -509,7 +547,7 @@ test('playTurn does not crash when a player exits a branch whose connectTo was l
         hp: 30,
         maxHp: 30,
         position: { track: 'b', index: 0 },
-        skipNextEffect: false,
+        restTurns: 0,
       },
     ],
     map: {
@@ -528,7 +566,9 @@ test('playTurn moves players, resolves effects, and advances the turn counter', 
   );
   const { state: nextState, gameOver } = playTurn(state, { p1: 6 }, {}, {}, {}, () => 0.5);
   assert.equal(nextState.turn, 1);
-  assert.deepEqual(nextState.players[0].position, { track: 'trunk', index: 6 });
+  // See the equivalent resolveMovement test above for why this is index 4,
+  // not 6 -- trimOldTrunkCells shifts it after the move.
+  assert.deepEqual(nextState.players[0].position, { track: 'trunk', index: 4 });
   assert.equal(gameOver.over, false);
 });
 
@@ -542,22 +582,14 @@ test('Monte Carlo: simulated games win at a sane rate (regression guard for boss
   // deterministic PRNG and checks the outcome is not degenerate in either
   // direction.
   //
-  // Note on the band actually asserted below: an earlier measurement taken
-  // right after calibrating avgDamagePerPlayerPerTurn (before the
-  // skipNextEffect death-penalty fix landed) showed win rates near 99%, and
-  // for a while this comment argued a tight band was unachievable. That
-  // measurement was stale -- skipNextEffect materially cuts player
-  // throughput (a revived player loses their own next-turn cell effect,
-  // including attacks), and the true win rate at this file's current state
-  // is ~70% on this exact seeded harness (measured range ~44-71% across
-  // party sizes 2-8). A [0.2, 0.9]-style band would in fact pass today. The
-  // assertion below is intentionally left as a wide floor rather than a
-  // tight band anyway, since re-deriving and re-pinning an exact band every
-  // time an unrelated mechanic shifts the simulated win rate is not worth
-  // the added flakiness risk -- the actual regression this test exists to
-  // catch is the calibration going back to ~0% (or to ~100%, i.e. becoming
-  // trivial), and the floor plus the wins>0/losses>0 checks below catch
-  // both directions without needing to track the exact rate.
+  // The assertion below is intentionally a wide floor rather than a tight
+  // band: the exact win rate has shifted with every balance pass so far
+  // (character power, boss HP/damage, heal/defense/damage-cell scaling,
+  // the rest-turns death penalty), and re-deriving/re-pinning an exact band
+  // each time is not worth the added flakiness risk. The regression this
+  // test actually exists to catch is the calibration going back to ~0%
+  // (unwinnable) or ~100% (trivial); the floor plus the wins>0/losses>0
+  // checks below catch both directions without tracking the exact rate.
   const GAMES = 100;
   const PLAYER_COUNT = 3;
   const CHARACTER_IDS = ['warrior', 'mage', 'archer'];

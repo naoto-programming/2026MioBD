@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BOSSES, rollBossAttack, calculateTurnLimit } from '../src/boss.js';
+import { BOSSES, rollBossAttack, calculateTurnLimit, calculateTargetedBalance, pickBossForSettings } from '../src/boss.js';
 
 test('fireDragon has a full 1-6 dice table matching the design doc flavor', () => {
   const names = [1, 2, 3, 4, 5, 6].map((face) => BOSSES.fireDragon.diceTable[face].name);
@@ -31,4 +31,16 @@ test('calculateTurnLimit throws a descriptive error for a playerCount below 1 in
   // Infinity and soft-locking the game. This should fail loudly instead.
   assert.throws(() => calculateTurnLimit(300, 0), /playerCount must be at least 1/);
   assert.throws(() => calculateTurnLimit(300, -1), /playerCount must be at least 1/);
+});
+
+test('quick games choose a lighter boss name and a lower minimum HP', () => {
+  const quickBoss = pickBossForSettings(2, 5);
+  const standardBoss = pickBossForSettings(2, 30);
+  const quickBalance = calculateTargetedBalance(2, 5);
+  const standardBalance = calculateTargetedBalance(2, 30);
+
+  assert.notEqual(quickBoss.id, standardBoss.id);
+  assert.ok(quickBoss.name.includes('小') || quickBoss.name.includes('軽') || quickBoss.name.includes('火'));
+  assert.ok(quickBalance.bossHp < standardBalance.bossHp);
+  assert.ok(quickBalance.turnLimit <= standardBalance.turnLimit);
 });

@@ -136,16 +136,41 @@ test('ensureMapAhead keeps branch rejoin distance long enough for the branch len
   }
 });
 
-test('trimOldTrunkCells removes cells older than 7 behind the slowest player and keeps branch geometry aligned', () => {
+test('trimOldTrunkCells removes cells at or behind (earliest - keepBehind) and keeps branch geometry aligned', () => {
+  // earliest player at index 10, keepBehind=5 -> removal threshold = 5, so
+  // indices 0-5 (6 cells) are removed and indices 6+ (5 cells behind the
+  // earliest player, 6..10) are kept.
   const map = {
     trunk: Array.from({ length: 30 }, () => ({ type: 'attack' })),
     branches: [{ id: 'branch-10', theme: 'heal', connectFrom: 10, connectTo: 18, cells: Array.from({ length: 8 }, () => ({ type: 'heal' })) }],
   };
 
-  const trimmed = trimOldTrunkCells(map, [{ track: 'trunk', index: 10 }], 7);
-  assert.equal(trimmed.trunk.length, 27);
-  assert.equal(trimmed.branches[0].connectFrom, 7);
-  assert.equal(trimmed.branches[0].connectTo, 15);
+  const { map: trimmed, positions } = trimOldTrunkCells(map, [{ track: 'trunk', index: 10 }], 5);
+  assert.equal(trimmed.trunk.length, 24, '30 cells minus the 6 removed (indices 0-5)');
+  assert.equal(trimmed.branches[0].connectFrom, 4, '10 - 6 (offset)');
+  assert.equal(trimmed.branches[0].connectTo, 12, '18 - 6 (offset)');
+  assert.deepEqual(positions, [{ track: 'trunk', index: 4 }], 'the player\'s own index shifts by the same offset (10 - 6)');
+});
+
+test('trimOldTrunkCells leaves branch-track positions untouched (only trunk indices shift)', () => {
+  const map = {
+    trunk: Array.from({ length: 30 }, () => ({ type: 'attack' })),
+    branches: [{ id: 'branch-10', theme: 'heal', connectFrom: 10, connectTo: 18, cells: Array.from({ length: 8 }, () => ({ type: 'heal' })) }],
+  };
+  // earliest trunk position 20, keepBehind 5 -> removal threshold 15,
+  // keepFrom/offset 16 -> shifted index 20 - 16 = 4.
+  const positions = [{ track: 'trunk', index: 20 }, { track: 'branch-10', index: 2 }];
+  const { positions: result } = trimOldTrunkCells(map, positions, 5);
+  assert.deepEqual(result[0], { track: 'trunk', index: 4 });
+  assert.deepEqual(result[1], { track: 'branch-10', index: 2 }, 'branch position is unaffected by trunk trimming');
+});
+
+test('trimOldTrunkCells is a no-op (and positions are passed through unchanged) when nothing is far enough behind to trim', () => {
+  const map = { trunk: Array.from({ length: 10 }, () => ({ type: 'attack' })), branches: [] };
+  const positions = [{ track: 'trunk', index: 2 }];
+  const { map: result, positions: resultPositions } = trimOldTrunkCells(map, positions, 5);
+  assert.equal(result.trunk.length, 10);
+  assert.deepEqual(resultPositions, positions);
 });
 
 test('computeBoardWindowRange keeps the earliest player in view when a distant branch is spawned', () => {

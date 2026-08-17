@@ -114,20 +114,26 @@ export function isBranchPoint(map, trunkIndex) {
   return branchesAt(map, trunkIndex).length > 0;
 }
 
-export function trimOldTrunkCells(map, playerPositions, keepBehind = 7) {
+// 最後尾(幹上で最も進んでいないプレイヤー)からkeepBehindマスより後ろの幹セルを
+// 削除する。例: 最後尾がマス10、keepBehind=5なら、削除の閾値は10-5=5、つまり
+// マス0〜5(5を含む6マス)を削除し、マス6以降(最後尾の5マス手前まで)を残す。
+// 幹だけでなく、削除した分だけ枝のconnectFrom/connectToと全プレイヤーの
+// (幹上の)位置インデックスも一緒にシフトする(結果を返り値のpositionsで反映)。
+export function trimOldTrunkCells(map, playerPositions, keepBehind = 5) {
   const trunkProgress = playerPositions
     .filter((p) => p.track === 'trunk')
     .map((p) => p.index);
 
   if (trunkProgress.length === 0) {
-    return map;
+    return { map, positions: playerPositions };
   }
 
   const earliest = Math.min(...trunkProgress);
-  const keepFrom = Math.max(0, earliest - keepBehind);
+  const removeThreshold = earliest - keepBehind; // このインデックス以下を削除
+  const keepFrom = removeThreshold + 1;
 
-  if (keepFrom === 0) {
-    return map;
+  if (keepFrom <= 0) {
+    return { map, positions: playerPositions };
   }
 
   const trimmedTrunk = map.trunk.slice(keepFrom);
@@ -139,7 +145,14 @@ export function trimOldTrunkCells(map, playerPositions, keepBehind = 7) {
     cells: branch.cells.slice(),
   }));
 
-  return { ...map, trunk: trimmedTrunk, branches: trimmedBranches };
+  const shiftedPositions = playerPositions.map((position) => (
+    position.track === 'trunk' ? { ...position, index: Math.max(0, position.index - offset) } : position
+  ));
+
+  return {
+    map: { ...map, trunk: trimmedTrunk, branches: trimmedBranches },
+    positions: shiftedPositions,
+  };
 }
 
 const BRANCH_SPAWN_CHANCE = 0.08;
