@@ -1,8 +1,0 @@
-services:
-  - type: web
-    name: sugoroku-signaling
-    runtime: node
-    plan: free
-    rootDir: signaling-server
-    buildCommand: npm install
-    startCommand: npm start

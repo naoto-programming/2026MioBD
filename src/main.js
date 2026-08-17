@@ -6,7 +6,7 @@ import { branchesAt, ensureMapAhead, getCell } from './mapGenerator.js';
 import { renderGame } from './render.js';
 import { startBgm, playSfx, toggleMuted, isMuted } from './audio.js';
 import * as net from './network.js';
-import { generateRoomCode } from './network.js';
+import { renderQrCode, startQrScanner } from './qr.js';
 
 const app = document.getElementById('app');
 let state = null;
@@ -23,13 +23,18 @@ let activeMovePlayerId = null;
 // これ以外のプレイヤー分は押せないようにする)。
 let onlineRole = null;
 let localPlayerId = null;
-let roomCode = null;
 let hostInfo = null; // { name, characterId }
-let hostGuestRoster = []; // ホスト側: [{ conn, name, characterId }] 参加順
+let hostGuestRoster = []; // ホスト側: [{ channel, name, characterId }] 参加順
 let hostTargetMinutes = 30;
 let guestRosterView = []; // ゲスト側: ホストから受け取った参加者一覧の表示用コピー
 let pendingRemoteEffectResolve = null; // ホスト側: 他プレイヤーの効果マス出目待ち
 let pendingRemoteBranchResolve = null; // ホスト側: 他プレイヤーの分岐選択待ち
+let activeScanner = null; // QRコードのカメラ読み取り中のハンドル(画面遷移時に止める)
+
+function stopActiveScanner() {
+  activeScanner?.stop();
+  activeScanner = null;
+}
 
 // ターン数から大まかな目安時間を出す(1ターンあたり移動+効果判定+ボス攻撃の
 // ポップアップ演出でおよそ20秒とみて概算)。あくまで目安の表示用。
@@ -64,7 +69,10 @@ function appendBackButton(label, onClick) {
   backButton.type = 'button';
   backButton.className = 'back-button';
   backButton.textContent = label;
-  backButton.addEventListener('click', onClick);
+  backButton.addEventListener('click', () => {
+    stopActiveScanner();
+    onClick();
+  });
   app.appendChild(backButton);
   return backButton;
 }
@@ -72,10 +80,10 @@ function appendBackButton(label, onClick) {
 // ---------- モード選択・オンライン対戦の部屋まわり ----------
 
 function renderModeSelectScreen() {
+  stopActiveScanner();
   net.disconnectAll();
   onlineRole = null;
   localPlayerId = null;
-  roomCode = null;
   hostGuestRoster = [];
   guestRosterView = [];
   state = null;
@@ -159,51 +167,19 @@ function renderHostSetupScreen() {
   app.appendChild(form);
   appendBackButton('戻る', () => renderOnlineChoiceScreen());
 
-  form.addEventListener('submit', async (event) => {
+  form.addEventListener('submit', (event) => {
     event.preventDefault();
-    const submitButton = form.querySelector('button[type="submit"]');
-    submitButton.disabled = true;
-    submitButton.textContent = '接続中…';
-
     hostInfo = {
       name: form.querySelector('#hostName').value || 'ホスト',
       characterId: form.querySelector('#hostCharacter').value,
     };
     hostTargetMinutes = Math.min(120, Math.max(5, Number(form.querySelector('#hostTargetMinutes').value) || 30));
     hostGuestRoster = [];
-
-    let joined = false;
-    let lastError = null;
-    const maxAttempts = 3;
-    for (let attempt = 0; attempt < maxAttempts && !joined; attempt++) {
-      submitButton.textContent = attempt === 0 ? '接続中…' : `接続中…(試行 ${attempt + 1}/${maxAttempts})`;
-      const code = generateRoomCode();
-      try {
-        // eslint-disable-next-line no-await-in-loop
-        await net.hostRoom(code, {
-          onGuestLeave: (conn) => {
-            hostGuestRoster = hostGuestRoster.filter((g) => g.conn !== conn);
-            broadcastRoster();
-            if (!state) renderHostLobbyScreen();
-          },
-        });
-        roomCode = code;
-        joined = true;
-      } catch (err) {
-        lastError = err;
-      }
-    }
-
-    if (!joined) {
-      submitButton.disabled = false;
-      submitButton.textContent = '部屋を作る';
-      alert(`部屋を作れませんでした(通信サーバーが混み合っている可能性があります。時間をおいて再度お試しください): ${lastError?.message ?? lastError}`);
-      return;
-    }
-
     onlineRole = 'host';
     localPlayerId = 'p0';
+    net.setRole('host');
     net.onMessage(handleHostMessage);
+    playSfx('confirm');
     renderHostLobbyScreen();
   });
 }
@@ -223,22 +199,94 @@ function renderHostLobbyScreen() {
   const totalPlayers = 1 + hostGuestRoster.length;
   const balance = calculateTargetedBalance(totalPlayers, hostTargetMinutes);
   wrap.innerHTML = `
-    <h1>部屋を作りました</h1>
-    <div class="room-code-display">${roomCode}</div>
-    <p class="mode-select-lead">この合言葉を他の人に伝えてください(同じWiFi推奨)</p>
+    <h1>ゲストを招待</h1>
+    <p class="mode-select-lead">「ゲストを追加」でQRコードが出ます。相手に読み取ってもらい、相手の画面に出るQRコードを今度はこちらで読み取れば接続完了です(サーバー不要・同じWiFi推奨)。</p>
     <div class="lobby-roster">
       <div class="lobby-roster-item">${hostInfo.name}(${CHARACTERS[hostInfo.characterId]?.name ?? hostInfo.characterId})・ホスト</div>
       ${hostGuestRoster.map((g) => `<div class="lobby-roster-item">${g.name}(${CHARACTERS[g.characterId]?.name ?? g.characterId})</div>`).join('')}
     </div>
     <p class="turn-limit-hint">目標 ${hostTargetMinutes}分 / 現在${totalPlayers}人 → ボス ${balance.bossName} / 予想${balance.turnLimit}ターン</p>
+    <button type="button" id="addGuest">ゲストを追加</button>
     <button type="button" id="startOnlineGame">ゲーム開始</button>
   `;
   app.appendChild(wrap);
   appendBackButton('部屋を閉じる', () => renderModeSelectScreen());
 
+  wrap.querySelector('#addGuest').addEventListener('click', () => {
+    playSfx('confirm');
+    beginNewGuestPairing();
+  });
   wrap.querySelector('#startOnlineGame').addEventListener('click', () => {
     playSfx('confirm');
     startOnlineHostGame();
+  });
+}
+
+async function runScanFlow(container, onDecoded) {
+  const scanWrap = document.createElement('div');
+  scanWrap.className = 'qr-scan-wrap';
+  scanWrap.innerHTML = `
+    <video id="scanVideo" autoplay playsinline muted></video>
+    <p class="turn-limit-hint">カメラをQRコードに向けてください</p>
+  `;
+  container.appendChild(scanWrap);
+  const video = scanWrap.querySelector('#scanVideo');
+
+  try {
+    const scanner = await startQrScanner(video, async (text) => {
+      activeScanner = null;
+      scanWrap.remove();
+      try {
+        await onDecoded(text);
+      } catch (err) {
+        alert(`読み取った内容を処理できませんでした: ${err?.message ?? err}`);
+      }
+    });
+    activeScanner = scanner;
+  } catch (err) {
+    scanWrap.remove();
+    alert(`カメラを使用できませんでした(カメラの利用を許可しているか確認してください): ${err?.message ?? err}`);
+  }
+}
+
+async function beginNewGuestPairing() {
+  app.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'lobby';
+  wrap.innerHTML = `
+    <h1>ゲストを招待</h1>
+    <p class="mode-select-lead">このQRコードを参加者に見せて読み取ってもらってください</p>
+    <div id="offerQr" class="qr-box"></div>
+    <p id="pairingStatus" class="turn-limit-hint">相手が読み取ったら、次は相手の画面に出るQRコードをこちらで読み取ります</p>
+    <button type="button" id="scanAnswer">相手のQRコードを読み取る</button>
+  `;
+  app.appendChild(wrap);
+
+  const { connection, dataChannel, payload } = await net.createHostOffer();
+  appendBackButton('キャンセル', () => {
+    connection.close();
+    renderHostLobbyScreen();
+  });
+  renderQrCode(wrap.querySelector('#offerQr'), payload);
+
+  dataChannel.onopen = () => {
+    net.registerHostChannel(connection, dataChannel, {
+      onClose: (channel) => {
+        hostGuestRoster = hostGuestRoster.filter((g) => g.channel !== channel);
+        broadcastRoster();
+        if (!state) renderHostLobbyScreen();
+      },
+    });
+  };
+
+  wrap.querySelector('#scanAnswer').addEventListener('click', () => {
+    runScanFlow(wrap, async (answerText) => {
+      await net.acceptAnswer(connection, answerText);
+      const status = wrap.querySelector('#pairingStatus');
+      if (status) status.textContent = '接続しています…';
+      // dataChannel.onopenが発火すればregisterHostChannelされ、相手からのjoin
+      // メッセージ受信時にrenderHostLobbyScreenへ自動的に戻る(handleHostMessage参照)。
+    });
   });
 }
 
@@ -249,7 +297,7 @@ function startOnlineHostGame() {
   ];
   startGame(selections, null, hostTargetMinutes);
   hostGuestRoster.forEach((g, i) => {
-    g.conn.send({ type: 'gameStart', state, yourPlayerId: `p${i + 1}` });
+    net.sendTo(g.channel, { type: 'gameStart', state, yourPlayerId: `p${i + 1}` });
   });
 }
 
@@ -258,9 +306,6 @@ function renderGuestJoinScreen() {
   const form = document.createElement('form');
   form.innerHTML = `
     <h1>部屋に入る</h1>
-    <label>合言葉
-      <input type="text" id="joinCode" maxlength="4" placeholder="例: 7QXK" style="text-transform:uppercase;letter-spacing:0.2em;" />
-    </label>
     <label>自分の名前
       <input type="text" id="guestName" placeholder="プレイヤー" value="プレイヤー" />
     </label>
@@ -269,66 +314,67 @@ function renderGuestJoinScreen() {
         ${Object.values(CHARACTERS).map((c) => `<option value="${c.id}">${c.name}</option>`).join('')}
       </select>
     </label>
-    <button type="submit">参加する</button>
+    <button type="submit">ホストのQRコードを読み取る</button>
   `;
   app.appendChild(form);
   appendBackButton('戻る', () => renderOnlineChoiceScreen());
 
-  form.addEventListener('submit', async (event) => {
+  form.addEventListener('submit', (event) => {
     event.preventDefault();
-    const submitButton = form.querySelector('button[type="submit"]');
-    const code = form.querySelector('#joinCode').value.trim().toUpperCase();
-    if (!code) {
-      alert('合言葉を入力してください');
-      return;
-    }
-
-    submitButton.disabled = true;
-    submitButton.textContent = '接続中…';
     const guestName = form.querySelector('#guestName').value || 'プレイヤー';
     const guestCharacterId = form.querySelector('#guestCharacter').value;
+    onlineRole = 'guest';
+    net.setRole('guest');
+    renderGuestScanOfferScreen(guestName, guestCharacterId);
+  });
+}
 
-    let joined = false;
-    let lastError = null;
-    const maxAttempts = 3;
-    for (let attempt = 0; attempt < maxAttempts && !joined; attempt++) {
-      submitButton.textContent = attempt === 0 ? '接続中…' : `接続中…(試行 ${attempt + 1}/${maxAttempts})`;
-      try {
-        // eslint-disable-next-line no-await-in-loop
-        await net.joinRoom(code, {
-          onError: () => {
-            if (!state) {
-              alert('ホストとの接続が切れました');
-              renderModeSelectScreen();
-            }
+function renderGuestScanOfferScreen(guestName, guestCharacterId) {
+  app.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'lobby';
+  wrap.innerHTML = `
+    <h1>ホストに接続</h1>
+    <p class="mode-select-lead">ホストの画面に出ているQRコードを読み取ってください</p>
+  `;
+  app.appendChild(wrap);
+  appendBackButton('戻る', () => renderOnlineChoiceScreen());
+
+  runScanFlow(wrap, async (offerText) => {
+    const { connection, payload } = await net.createAnswerFromOffer(offerText);
+    net.onDataChannelReady(connection, (channel) => {
+      channel.onopen = () => {
+        net.registerGuestChannel(connection, channel, {
+          onClose: () => {
+            if (!state) return;
+            alert('ホストとの接続が切れました');
+            renderModeSelectScreen();
           },
         });
-        joined = true;
-      } catch (err) {
-        lastError = err;
-        // 合言葉自体が間違っている(部屋が存在しない)場合は何度試しても無駄なので
-        // 通信エラーとは分けて即座にあきらめる。
-        if (err?.type === 'peer-unavailable') break;
-      }
-    }
-
-    if (!joined) {
-      submitButton.disabled = false;
-      submitButton.textContent = '参加する';
-      const message = lastError?.type === 'peer-unavailable'
-        ? '部屋が見つかりませんでした。合言葉を確認してください。'
-        : `部屋に入れませんでした(通信サーバーが混み合っている可能性があります。時間をおいて再度お試しください): ${lastError?.message ?? lastError}`;
-      alert(message);
-      return;
-    }
-
-    onlineRole = 'guest';
-    roomCode = code;
-    guestRosterView = [];
-    net.onMessage(handleGuestMessage);
-    net.send({ type: 'join', name: guestName, characterId: guestCharacterId });
-    renderGuestWaitingScreen();
+        net.onMessage(handleGuestMessage);
+        net.send({ type: 'join', name: guestName, characterId: guestCharacterId });
+        renderGuestWaitingScreen();
+      };
+    });
+    renderGuestShowAnswerScreen(connection, payload);
   });
+}
+
+function renderGuestShowAnswerScreen(connection, payload) {
+  app.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'lobby';
+  wrap.innerHTML = `
+    <h1>あと少しです</h1>
+    <p class="mode-select-lead">この画面をホストに見せて、QRコードを読み取ってもらってください。読み取られると自動で次に進みます。</p>
+    <div id="answerQr" class="qr-box"></div>
+  `;
+  app.appendChild(wrap);
+  appendBackButton('戻る', () => {
+    connection.close();
+    renderOnlineChoiceScreen();
+  });
+  renderQrCode(wrap.querySelector('#answerQr'), payload);
 }
 
 function renderGuestWaitingScreen() {
@@ -348,14 +394,14 @@ function renderGuestWaitingScreen() {
 
 // ---------- ホスト/ゲスト間のメッセージ処理 ----------
 
-function handleHostMessage(msg, conn) {
+function handleHostMessage(msg, channel) {
   if (msg.type === 'join') {
-    const existing = hostGuestRoster.find((g) => g.conn === conn);
+    const existing = hostGuestRoster.find((g) => g.channel === channel);
     if (existing) {
       existing.name = msg.name;
       existing.characterId = msg.characterId;
     } else {
-      hostGuestRoster.push({ conn, name: msg.name, characterId: msg.characterId });
+      hostGuestRoster.push({ channel, name: msg.name, characterId: msg.characterId });
     }
     broadcastRoster();
     if (!state) renderHostLobbyScreen();
@@ -363,7 +409,7 @@ function handleHostMessage(msg, conn) {
   }
   if (msg.type === 'moveRoll') {
     spinDice(msg.playerId, msg.value, 'move');
-    net.broadcast({ type: 'moveRoll', playerId: msg.playerId, value: msg.value }, conn);
+    net.broadcast({ type: 'moveRoll', playerId: msg.playerId, value: msg.value }, channel);
     return;
   }
   if (msg.type === 'effectRollValue') {

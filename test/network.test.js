@@ -1,32 +1,28 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateRoomCode } from '../src/network.js';
+import { encodeSignal, decodeSignal } from '../src/network.js';
 
-test('generateRoomCode returns a 4-character code by default', () => {
-  const code = generateRoomCode(() => 0.5);
-  assert.equal(code.length, 4);
+test('encodeSignal/decodeSignal round-trips an offer description', () => {
+  const desc = { type: 'offer', sdp: 'v=0\r\no=- 123 2 IN IP4 127.0.0.1\r\n' };
+  const decoded = decodeSignal(encodeSignal(desc));
+  assert.deepEqual(decoded, desc);
 });
 
-test('generateRoomCode only uses unambiguous uppercase letters and digits (no 0/O/1/I/L)', () => {
-  const seen = new Set();
-  for (let i = 0; i < 500; i++) {
-    const code = generateRoomCode(Math.random);
-    for (const ch of code) seen.add(ch);
-  }
-  for (const ch of seen) {
-    assert.ok(/[2-9A-HJ-NP-Z]/.test(ch), `unexpected character in room code: ${ch}`);
-  }
+test('encodeSignal/decodeSignal round-trips an answer description', () => {
+  const desc = { type: 'answer', sdp: 'v=0\r\no=- 456 2 IN IP4 127.0.0.1\r\n' };
+  const decoded = decodeSignal(encodeSignal(desc));
+  assert.deepEqual(decoded, desc);
 });
 
-test('generateRoomCode is deterministic for a given rng sequence', () => {
-  const values = [0, 0.5, 0.99, 0.25];
-  const makeRng = () => {
-    let calls = 0;
-    return () => values[calls++ % values.length];
-  };
-  assert.equal(generateRoomCode(makeRng(), 4), generateRoomCode(makeRng(), 4));
+test('encodeSignal produces a compact JSON payload (short keys)', () => {
+  const payload = encodeSignal({ type: 'offer', sdp: 'x' });
+  const parsed = JSON.parse(payload);
+  assert.deepEqual(Object.keys(parsed).sort(), ['s', 't']);
+  assert.equal(parsed.t, 'o');
+  assert.equal(parsed.s, 'x');
 });
 
-test('generateRoomCode supports a custom length', () => {
-  assert.equal(generateRoomCode(() => 0.1, 6).length, 6);
+test('decodeSignal maps the compact "a" type back to "answer"', () => {
+  const decoded = decodeSignal(JSON.stringify({ t: 'a', s: 'sdp-text' }));
+  assert.deepEqual(decoded, { type: 'answer', sdp: 'sdp-text' });
 });
