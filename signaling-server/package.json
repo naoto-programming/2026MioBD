@@ -1,0 +1,16 @@
+{
+  "name": "sugoroku-signaling-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "双六RPGのオンライン対戦(同じWiFi内P2P)で使うPeerJSシグナリングサーバー。WebRTC接続の仲介のみ行い、ゲームの状態は一切扱わない。",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "peer": "^1.0.2"
+  }
+}

@@ -1,9 +1,29 @@
 // src/network.js
-// 同じWiFi内でのオンライン対戦用の通信レイヤー。サーバーは自前で立てず、
-// PeerJSの公開シグナリングサーバー経由でWebRTC接続を確立し、その後は
-// ホストとゲスト間でP2P通信する(ホストが唯一の正となり、ゲストはホストと
-// だけ繋がるスター型)。ブラウザの`Peer`(index.htmlでCDN読み込み)に依存するため
-// このファイルはブラウザ専用で、テストからは generateRoomCode のみを使う。
+// 同じWiFi内でのオンライン対戦用の通信レイヤー。WebRTC接続を確立するための
+// シグナリング(仲介)だけ signaling-server/ (自前でホストする軽量PeerServer)
+// 経由で行い、確立後の実際のゲームデータはホストとゲスト間で直接P2P通信する
+// (ホストが唯一の正となり、ゲストはホストとだけ繋がるスター型)。
+// ブラウザの`Peer`(index.htmlでCDN読み込み)に依存するため、このファイルは
+// ブラウザ専用で、テストからは generateRoomCode のみを使う。
+
+// signaling-server/ をデプロイしたら、そのホスト名をここに設定する
+// (例: 'sugoroku-signaling.onrender.com')。空文字のままだとPeerJSの無料公開
+// ブローカー(0.peerjs.com)にフォールバックするが、そちらはSLAのないベスト
+// エフォートのサービスで不安定なことがあるため、自前サーバーの利用を推奨する。
+const SIGNALING_HOST = '';
+const SIGNALING_SECURE = true;
+const SIGNALING_PORT = SIGNALING_SECURE ? 443 : 80;
+
+function peerOptions() {
+  if (!SIGNALING_HOST) return { debug: 0 };
+  return {
+    debug: 0,
+    host: SIGNALING_HOST,
+    secure: SIGNALING_SECURE,
+    port: SIGNALING_PORT,
+    path: '/',
+  };
+}
 
 const ROOM_ID_PREFIX = 'sugoroku6-';
 const CODE_CHARSET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ'; // 0/O/1/I/Lなど紛らわしい文字は除外
@@ -55,7 +75,7 @@ export function hostRoom(roomCode, { onGuestJoin, onGuestLeave, onError, timeout
     }
     role = 'host';
     hostConnections = [];
-    peer = new Peer(ROOM_ID_PREFIX + roomCode, { debug: 0 });
+    peer = new Peer(ROOM_ID_PREFIX + roomCode, peerOptions());
 
     let settled = false;
     const timer = setTimeout(() => {
@@ -104,7 +124,7 @@ export function joinRoom(roomCode, { onError, timeoutMs = CONNECT_TIMEOUT_MS } =
       return;
     }
     role = 'guest';
-    peer = new Peer(undefined, { debug: 0 });
+    peer = new Peer(undefined, peerOptions());
 
     let settled = false;
     const timer = setTimeout(() => {
