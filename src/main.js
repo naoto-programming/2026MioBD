@@ -6,7 +6,6 @@ import { branchesAt, ensureMapAhead, getCell } from './mapGenerator.js';
 import { renderGame } from './render.js';
 import { startBgm, playSfx, toggleMuted, isMuted } from './audio.js';
 import * as net from './network.js';
-import { renderQrCode, startQrScanner } from './qr.js';
 
 const app = document.getElementById('app');
 let state = null;
@@ -29,12 +28,7 @@ let hostTargetMinutes = 30;
 let guestRosterView = []; // ゲスト側: ホストから受け取った参加者一覧の表示用コピー
 let pendingRemoteEffectResolve = null; // ホスト側: 他プレイヤーの効果マス出目待ち
 let pendingRemoteBranchResolve = null; // ホスト側: 他プレイヤーの分岐選択待ち
-let activeScanner = null; // QRコードのカメラ読み取り中のハンドル(画面遷移時に止める)
-
-function stopActiveScanner() {
-  activeScanner?.stop();
-  activeScanner = null;
-}
+let stopAwaitingAnswer = null; // ホスト側: 合言葉に対するアンサー待ち(SSE)の購読解除
 
 // ターン数から大まかな目安時間を出す(1ターンあたり移動+効果判定+ボス攻撃の
 // ポップアップ演出でおよそ20秒とみて概算)。あくまで目安の表示用。
@@ -64,13 +58,18 @@ function wireMuteButton() {
   syncMuteButton();
 }
 
+function stopAwaitingAnswerIfAny() {
+  stopAwaitingAnswer?.();
+  stopAwaitingAnswer = null;
+}
+
 function appendBackButton(label, onClick) {
   const backButton = document.createElement('button');
   backButton.type = 'button';
   backButton.className = 'back-button';
   backButton.textContent = label;
   backButton.addEventListener('click', () => {
-    stopActiveScanner();
+    stopAwaitingAnswerIfAny();
     onClick();
   });
   app.appendChild(backButton);
@@ -80,7 +79,7 @@ function appendBackButton(label, onClick) {
 // ---------- モード選択・オンライン対戦の部屋まわり ----------
 
 function renderModeSelectScreen() {
-  stopActiveScanner();
+  stopAwaitingAnswerIfAny();
   net.disconnectAll();
   onlineRole = null;
   localPlayerId = null;
@@ -200,7 +199,7 @@ function renderHostLobbyScreen() {
   const balance = calculateTargetedBalance(totalPlayers, hostTargetMinutes);
   wrap.innerHTML = `
     <h1>ゲストを招待</h1>
-    <p class="mode-select-lead">「ゲストを追加」でQRコードが出ます。相手に読み取ってもらい、相手の画面に出るQRコードを今度はこちらで読み取れば接続完了です(サーバー不要・同じWiFi推奨)。</p>
+    <p class="mode-select-lead">「ゲストを追加」で4桁の合言葉が出ます。相手に伝えて入力してもらえば、自動で接続完了です(同じWiFi推奨)。</p>
     <div class="lobby-roster">
       <div class="lobby-roster-item">${hostInfo.name}(${CHARACTERS[hostInfo.characterId]?.name ?? hostInfo.characterId})・ホスト</div>
       ${hostGuestRoster.map((g) => `<div class="lobby-roster-item">${g.name}(${CHARACTERS[g.characterId]?.name ?? g.characterId})</div>`).join('')}
@@ -222,52 +221,42 @@ function renderHostLobbyScreen() {
   });
 }
 
-async function runScanFlow(container, onDecoded) {
-  const scanWrap = document.createElement('div');
-  scanWrap.className = 'qr-scan-wrap';
-  scanWrap.innerHTML = `
-    <video id="scanVideo" autoplay playsinline muted></video>
-    <p class="turn-limit-hint">カメラをQRコードに向けてください</p>
-  `;
-  container.appendChild(scanWrap);
-  const video = scanWrap.querySelector('#scanVideo');
-
-  try {
-    const scanner = await startQrScanner(video, async (text) => {
-      activeScanner = null;
-      scanWrap.remove();
-      try {
-        await onDecoded(text);
-      } catch (err) {
-        alert(`読み取った内容を処理できませんでした: ${err?.message ?? err}`);
-      }
-    });
-    activeScanner = scanner;
-  } catch (err) {
-    scanWrap.remove();
-    alert(`カメラを使用できませんでした(カメラの利用を許可しているか確認してください): ${err?.message ?? err}`);
-  }
-}
-
 async function beginNewGuestPairing() {
   app.innerHTML = '';
   const wrap = document.createElement('div');
   wrap.className = 'lobby';
   wrap.innerHTML = `
     <h1>ゲストを招待</h1>
-    <p class="mode-select-lead">このQRコードを参加者に見せて読み取ってもらってください</p>
-    <div id="offerQr" class="qr-box"></div>
-    <p id="pairingStatus" class="turn-limit-hint">相手が読み取ったら、次は相手の画面に出るQRコードをこちらで読み取ります</p>
-    <button type="button" id="scanAnswer">相手のQRコードを読み取る</button>
+    <p class="mode-select-lead">この4桁の合言葉を参加者に伝えてください</p>
+    <p id="pairingStatus" class="turn-limit-hint">合言葉を発行しています…</p>
   `;
   app.appendChild(wrap);
-
-  const { connection, dataChannel, payload } = await net.createHostOffer();
+  const pending = { code: null, connection: null };
   appendBackButton('キャンセル', () => {
-    connection.close();
+    if (pending.code) net.clearRoom(pending.code);
+    pending.connection?.close();
     renderHostLobbyScreen();
   });
-  renderQrCode(wrap.querySelector('#offerQr'), payload);
+
+  let code;
+  try {
+    code = await net.reserveJoinCode();
+  } catch (err) {
+    alert(`合言葉を発行できませんでした: ${err?.message ?? err}`);
+    renderHostLobbyScreen();
+    return;
+  }
+  pending.code = code;
+
+  const codeDisplay = document.createElement('div');
+  codeDisplay.className = 'room-code-display';
+  codeDisplay.textContent = code;
+  wrap.querySelector('#pairingStatus').before(codeDisplay);
+  wrap.querySelector('#pairingStatus').textContent = '参加を待っています…';
+
+  const { connection, dataChannel, payload } = await net.createHostOffer();
+  pending.connection = connection;
+  await net.publishOffer(code, payload);
 
   dataChannel.onopen = () => {
     net.registerHostChannel(connection, dataChannel, {
@@ -279,14 +268,14 @@ async function beginNewGuestPairing() {
     });
   };
 
-  wrap.querySelector('#scanAnswer').addEventListener('click', () => {
-    runScanFlow(wrap, async (answerText) => {
-      await net.acceptAnswer(connection, answerText);
-      const status = wrap.querySelector('#pairingStatus');
-      if (status) status.textContent = '接続しています…';
-      // dataChannel.onopenが発火すればregisterHostChannelされ、相手からのjoin
-      // メッセージ受信時にrenderHostLobbyScreenへ自動的に戻る(handleHostMessage参照)。
-    });
+  stopAwaitingAnswer = net.awaitAnswer(code, async (answerText) => {
+    stopAwaitingAnswer = null;
+    await net.acceptAnswer(connection, answerText);
+    await net.clearRoom(code);
+    const status = wrap.querySelector('#pairingStatus');
+    if (status) status.textContent = '接続しています…';
+    // dataChannel.onopenが発火すればregisterHostChannelされ、相手からのjoin
+    // メッセージ受信時にrenderHostLobbyScreenへ自動的に戻る(handleHostMessage参照)。
   });
 }
 
@@ -306,6 +295,9 @@ function renderGuestJoinScreen() {
   const form = document.createElement('form');
   form.innerHTML = `
     <h1>部屋に入る</h1>
+    <label>合言葉(4桁)
+      <input type="text" id="joinCode" inputmode="numeric" maxlength="4" placeholder="1234" style="letter-spacing:0.3em;" />
+    </label>
     <label>自分の名前
       <input type="text" id="guestName" placeholder="プレイヤー" value="プレイヤー" />
     </label>
@@ -314,67 +306,70 @@ function renderGuestJoinScreen() {
         ${Object.values(CHARACTERS).map((c) => `<option value="${c.id}">${c.name}</option>`).join('')}
       </select>
     </label>
-    <button type="submit">ホストのQRコードを読み取る</button>
+    <button type="submit">参加する</button>
   `;
   app.appendChild(form);
   appendBackButton('戻る', () => renderOnlineChoiceScreen());
 
   form.addEventListener('submit', (event) => {
     event.preventDefault();
+    const code = form.querySelector('#joinCode').value.trim();
+    if (!/^\d{4}$/.test(code)) {
+      alert('4桁の数字で入力してください');
+      return;
+    }
     const guestName = form.querySelector('#guestName').value || 'プレイヤー';
     const guestCharacterId = form.querySelector('#guestCharacter').value;
     onlineRole = 'guest';
     net.setRole('guest');
-    renderGuestScanOfferScreen(guestName, guestCharacterId);
+    connectGuestToRoom(code, guestName, guestCharacterId);
   });
 }
 
-function renderGuestScanOfferScreen(guestName, guestCharacterId) {
+async function connectGuestToRoom(code, guestName, guestCharacterId) {
   app.innerHTML = '';
   const wrap = document.createElement('div');
   wrap.className = 'lobby';
   wrap.innerHTML = `
     <h1>ホストに接続</h1>
-    <p class="mode-select-lead">ホストの画面に出ているQRコードを読み取ってください</p>
+    <p class="mode-select-lead">接続しています…</p>
   `;
   app.appendChild(wrap);
   appendBackButton('戻る', () => renderOnlineChoiceScreen());
 
-  runScanFlow(wrap, async (offerText) => {
-    const { connection, payload } = await net.createAnswerFromOffer(offerText);
-    net.onDataChannelReady(connection, (channel) => {
-      channel.onopen = () => {
-        net.registerGuestChannel(connection, channel, {
-          onClose: () => {
-            if (!state) return;
-            alert('ホストとの接続が切れました');
-            renderModeSelectScreen();
-          },
-        });
-        net.onMessage(handleGuestMessage);
-        net.send({ type: 'join', name: guestName, characterId: guestCharacterId });
-        renderGuestWaitingScreen();
-      };
-    });
-    renderGuestShowAnswerScreen(connection, payload);
-  });
-}
+  let offerText;
+  try {
+    offerText = await net.fetchOffer(code);
+  } catch (err) {
+    alert(`接続に失敗しました: ${err?.message ?? err}`);
+    renderGuestJoinScreen();
+    return;
+  }
+  if (!offerText) {
+    alert('部屋が見つかりませんでした。合言葉を確認してください。');
+    renderGuestJoinScreen();
+    return;
+  }
 
-function renderGuestShowAnswerScreen(connection, payload) {
-  app.innerHTML = '';
-  const wrap = document.createElement('div');
-  wrap.className = 'lobby';
-  wrap.innerHTML = `
-    <h1>あと少しです</h1>
-    <p class="mode-select-lead">この画面をホストに見せて、QRコードを読み取ってもらってください。読み取られると自動で次に進みます。</p>
-    <div id="answerQr" class="qr-box"></div>
-  `;
-  app.appendChild(wrap);
-  appendBackButton('戻る', () => {
-    connection.close();
-    renderOnlineChoiceScreen();
+  const { connection, payload } = await net.createAnswerFromOffer(offerText);
+  net.onDataChannelReady(connection, (channel) => {
+    channel.onopen = () => {
+      net.registerGuestChannel(connection, channel, {
+        onClose: () => {
+          if (!state) return;
+          alert('ホストとの接続が切れました');
+          renderModeSelectScreen();
+        },
+      });
+      net.onMessage(handleGuestMessage);
+      net.send({ type: 'join', name: guestName, characterId: guestCharacterId });
+      renderGuestWaitingScreen();
+    };
   });
-  renderQrCode(wrap.querySelector('#answerQr'), payload);
+  await net.publishAnswer(code, payload);
+
+  const lead = wrap.querySelector('.mode-select-lead');
+  if (lead) lead.textContent = 'ホストの応答を待っています…';
 }
 
 function renderGuestWaitingScreen() {

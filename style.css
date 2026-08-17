@@ -926,31 +926,15 @@ form select {
   text-align: center;
 }
 
-.qr-box {
-  width: 260px;
-  height: 260px;
-  padding: 12px;
+.room-code-display {
+  font-size: 2.6rem;
+  font-weight: 900;
+  letter-spacing: 0.3em;
+  padding: 0.6rem 1.2rem;
   border-radius: 18px;
-  background: #ffffff;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.qr-scan-wrap {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.6rem;
-}
-
-.qr-scan-wrap video {
-  width: 100%;
-  max-width: 320px;
-  border-radius: 18px;
-  background: #000;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+  background: rgba(255, 201, 74, 0.14);
+  border: 2px solid rgba(255, 201, 74, 0.5);
+  color: var(--accent-gold);
 }
 
 .lobby-roster {

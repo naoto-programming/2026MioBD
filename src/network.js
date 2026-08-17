@@ -1,15 +1,22 @@
 // src/network.js
-// 同じWiFi内でのオンライン対戦用の通信レイヤー。シグナリングサーバーを一切
-// 使わず、WebRTCのオファー/アンサーをQRコード経由で手動でやり取りして接続を
-// 確立する(接続確立後の実際のゲームデータはホストとゲスト間で直接P2P通信する。
-// ホストが唯一の正となり、ゲストはホストとだけ繋がるスター型)。
-// STUNサーバー(公開・無料・ステートレスなIP発見用で、アプリのデータには
-// 一切関与しない)だけは接続の当て推量を助けるためのフォールバックとして使う。
-// このファイルはRTCPeerConnection/RTCDataChannelといったブラウザAPIに依存する
-// ため、テストからは encodeSignal/decodeSignal のみを使う。
+// 同じWiFi内でのオンライン対戦用の通信レイヤー。実際のゲームデータは常に
+// ホストとゲスト間で直接P2P通信する(ホストが唯一の正となり、ゲストはホストと
+// だけ繋がるスター型)。最初の接続確立(シグナリング=WebRTCのオファー/アンサーの
+// 受け渡し)だけ、常時稼働で信頼性の高いFirebase Realtime DatabaseをREST API+
+// SSEで薄く仲介として使う(自前のサーバーコードは一切書かない。ゲーム中は
+// 一切経由しない)。STUNサーバー(公開・無料・ステートレスなIP発見用で、
+// アプリのデータには一切関与しない)は接続の当て推量を助けるフォールバック。
+// このファイルはRTCPeerConnection/RTCDataChannel/fetch/EventSourceといった
+// ブラウザAPIに依存するため、テストからは encodeSignal/decodeSignal/
+// generateJoinCode のみを使う。
 
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 const ICE_GATHER_TIMEOUT_MS = 4000;
+
+// signaling-server/README.mdの手順でFirebaseプロジェクトを作ったら、
+// Realtime DatabaseのURLをここに設定する
+// (例: 'https://xxxx-default-rtdb.asia-southeast1.firebasedatabase.app')。
+const FIREBASE_DB_URL = '';
 
 export function encodeSignal(desc) {
   return JSON.stringify({ t: desc.type === 'offer' ? 'o' : 'a', s: desc.sdp });
@@ -18,6 +25,99 @@ export function encodeSignal(desc) {
 export function decodeSignal(text) {
   const parsed = JSON.parse(text);
   return { type: parsed.t === 'o' ? 'offer' : 'answer', sdp: parsed.s };
+}
+
+export function generateJoinCode(rng = Math.random) {
+  return String(Math.floor(rng() * 10000)).padStart(4, '0');
+}
+
+function roomPath(code, key) {
+  return `${FIREBASE_DB_URL}/rooms/${code}/${key}.json`;
+}
+
+async function firebasePut(code, key, value) {
+  await fetch(roomPath(code, key), { method: 'PUT', body: JSON.stringify(value) });
+}
+
+async function firebaseGet(code, key) {
+  const res = await fetch(roomPath(code, key));
+  if (!res.ok) return null;
+  return res.json();
+}
+
+async function firebaseDeleteRoom(code) {
+  if (!FIREBASE_DB_URL) return;
+  await fetch(`${FIREBASE_DB_URL}/rooms/${code}.json`, { method: 'DELETE' }).catch(() => {});
+}
+
+// ホスト側: 4桁コードの衝突(まれに他の実行中の部屋やゴミデータと被る)を避ける
+// ため、既に使われていないコードを探す。
+export async function reserveJoinCode({ attempts = 5 } = {}) {
+  if (!FIREBASE_DB_URL) {
+    throw new Error('通信の仲介先(Firebase)が設定されていません。src/network.jsのFIREBASE_DB_URLを確認してください。');
+  }
+  for (let i = 0; i < attempts; i++) {
+    const code = generateJoinCode();
+    // eslint-disable-next-line no-await-in-loop
+    const existing = await firebaseGet(code, 'offer');
+    if (existing === null || existing === undefined) return code;
+  }
+  throw new Error('合言葉の発行に失敗しました。もう一度お試しください。');
+}
+
+// ホスト側: オファーを公開する。
+export async function publishOffer(code, payload) {
+  await firebasePut(code, 'offer', payload);
+}
+
+// ゲスト側: コードに対応するオファーを取得する(ホストの書き込みと多少前後
+// する可能性があるので、数回リトライする)。見つからなければnull。
+export async function fetchOffer(code, { attempts = 6, intervalMs = 1000 } = {}) {
+  for (let i = 0; i < attempts; i++) {
+    // eslint-disable-next-line no-await-in-loop
+    const value = await firebaseGet(code, 'offer');
+    if (value) return value;
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return null;
+}
+
+// ゲスト側: アンサーを公開する。
+export async function publishAnswer(code, payload) {
+  await firebasePut(code, 'answer', payload);
+}
+
+// ホスト側: アンサーが書き込まれるのをリアルタイムに待つ(SSE)。
+// 呼び出すと購読解除用の関数を返す。
+export function awaitAnswer(code, onAnswer) {
+  if (!FIREBASE_DB_URL) return () => {};
+  const source = new EventSource(roomPath(code, 'answer'));
+  let done = false;
+  const handlePut = (event) => {
+    if (done) return;
+    try {
+      const parsed = JSON.parse(event.data);
+      if (parsed?.data) {
+        done = true;
+        source.close();
+        onAnswer(parsed.data);
+      }
+    } catch {
+      // 不正なイベントは無視する
+    }
+  };
+  source.addEventListener('put', handlePut);
+  source.addEventListener('patch', handlePut);
+  return () => {
+    done = true;
+    source.close();
+  };
+}
+
+// ペアリング完了/中断後、次の合言葉のために部屋のデータを片付ける。
+export async function clearRoom(code) {
+  await firebaseDeleteRoom(code);
 }
 
 function waitForIceGatheringComplete(pc) {
