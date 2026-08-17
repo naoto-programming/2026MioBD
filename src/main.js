@@ -174,7 +174,9 @@ function renderHostSetupScreen() {
 
     let joined = false;
     let lastError = null;
-    for (let attempt = 0; attempt < 3 && !joined; attempt++) {
+    const maxAttempts = 3;
+    for (let attempt = 0; attempt < maxAttempts && !joined; attempt++) {
+      submitButton.textContent = attempt === 0 ? '接続中…' : `接続中…(試行 ${attempt + 1}/${maxAttempts})`;
       const code = generateRoomCode();
       try {
         // eslint-disable-next-line no-await-in-loop
@@ -195,7 +197,7 @@ function renderHostSetupScreen() {
     if (!joined) {
       submitButton.disabled = false;
       submitButton.textContent = '部屋を作る';
-      alert(`部屋を作れませんでした: ${lastError?.message ?? lastError}`);
+      alert(`部屋を作れませんでした(通信サーバーが混み合っている可能性があります。時間をおいて再度お試しください): ${lastError?.message ?? lastError}`);
       return;
     }
 
@@ -286,26 +288,46 @@ function renderGuestJoinScreen() {
     const guestName = form.querySelector('#guestName').value || 'プレイヤー';
     const guestCharacterId = form.querySelector('#guestCharacter').value;
 
-    try {
-      await net.joinRoom(code, {
-        onError: () => {
-          if (!state) {
-            alert('ホストとの接続が切れました');
-            renderModeSelectScreen();
-          }
-        },
-      });
-      onlineRole = 'guest';
-      roomCode = code;
-      guestRosterView = [];
-      net.onMessage(handleGuestMessage);
-      net.send({ type: 'join', name: guestName, characterId: guestCharacterId });
-      renderGuestWaitingScreen();
-    } catch (err) {
+    let joined = false;
+    let lastError = null;
+    const maxAttempts = 3;
+    for (let attempt = 0; attempt < maxAttempts && !joined; attempt++) {
+      submitButton.textContent = attempt === 0 ? '接続中…' : `接続中…(試行 ${attempt + 1}/${maxAttempts})`;
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        await net.joinRoom(code, {
+          onError: () => {
+            if (!state) {
+              alert('ホストとの接続が切れました');
+              renderModeSelectScreen();
+            }
+          },
+        });
+        joined = true;
+      } catch (err) {
+        lastError = err;
+        // 合言葉自体が間違っている(部屋が存在しない)場合は何度試しても無駄なので
+        // 通信エラーとは分けて即座にあきらめる。
+        if (err?.type === 'peer-unavailable') break;
+      }
+    }
+
+    if (!joined) {
       submitButton.disabled = false;
       submitButton.textContent = '参加する';
-      alert(`部屋に入れませんでした: ${err?.message ?? err}`);
+      const message = lastError?.type === 'peer-unavailable'
+        ? '部屋が見つかりませんでした。合言葉を確認してください。'
+        : `部屋に入れませんでした(通信サーバーが混み合っている可能性があります。時間をおいて再度お試しください): ${lastError?.message ?? lastError}`;
+      alert(message);
+      return;
     }
+
+    onlineRole = 'guest';
+    roomCode = code;
+    guestRosterView = [];
+    net.onMessage(handleGuestMessage);
+    net.send({ type: 'join', name: guestName, characterId: guestCharacterId });
+    renderGuestWaitingScreen();
   });
 }
 

@@ -41,7 +41,13 @@ function attachDataHandlers(conn, onOpen, onClose) {
   }
 }
 
-export function hostRoom(roomCode, { onGuestJoin, onGuestLeave, onError } = {}) {
+// 無料の公開シグナリングサーバー(0.peerjs.com)はSLAのないベストエフォートの
+// サービスで、混雑時は接続確立に数秒〜まれに失敗することがある。ここで
+// タイムアウトを切って呼び出し元(main.js)が「新しい合言葉でもう一度」を
+// 試せるようにする。接続確立後に一時的に切れた場合は自動で1回だけ再接続を試みる。
+const CONNECT_TIMEOUT_MS = 15000;
+
+export function hostRoom(roomCode, { onGuestJoin, onGuestLeave, onError, timeoutMs = CONNECT_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
     if (typeof Peer === 'undefined') {
       reject(new Error('通信ライブラリの読み込みに失敗しました。通信環境を確認してください。'));
@@ -51,9 +57,30 @@ export function hostRoom(roomCode, { onGuestJoin, onGuestLeave, onError } = {}) 
     hostConnections = [];
     peer = new Peer(ROOM_ID_PREFIX + roomCode, { debug: 0 });
 
-    peer.on('open', () => resolve(roomCode));
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      peer?.destroy();
+      reject(new Error('接続がタイムアウトしました(サーバーが混み合っている可能性があります)。もう一度お試しください。'));
+    }, timeoutMs);
+
+    peer.on('open', () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(roomCode);
+    });
+    peer.on('disconnected', () => {
+      if (settled) peer?.reconnect();
+    });
     peer.on('error', (err) => {
-      reject(err);
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+        return;
+      }
       onError?.(err);
     });
     peer.on('connection', (conn) => {
@@ -70,7 +97,7 @@ export function hostRoom(roomCode, { onGuestJoin, onGuestLeave, onError } = {}) 
   });
 }
 
-export function joinRoom(roomCode, { onError } = {}) {
+export function joinRoom(roomCode, { onError, timeoutMs = CONNECT_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
     if (typeof Peer === 'undefined') {
       reject(new Error('通信ライブラリの読み込みに失敗しました。通信環境を確認してください。'));
@@ -79,20 +106,29 @@ export function joinRoom(roomCode, { onError } = {}) {
     role = 'guest';
     peer = new Peer(undefined, { debug: 0 });
 
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      peer?.destroy();
+      reject(new Error('接続がタイムアウトしました(サーバーが混み合っている可能性があります)。もう一度お試しください。'));
+    }, timeoutMs);
+
     peer.on('open', () => {
       const conn = peer.connect(ROOM_ID_PREFIX + roomCode, { reliable: true });
       guestConnection = conn;
-      let settled = false;
       attachDataHandlers(
         conn,
         () => {
           if (settled) return;
           settled = true;
+          clearTimeout(timer);
           resolve(conn);
         },
         () => {
           if (!settled) {
             settled = true;
+            clearTimeout(timer);
             reject(new Error('部屋が見つかりませんでした。合言葉を確認してください。'));
           } else {
             onError?.(new Error('ホストとの接続が切れました'));
@@ -100,8 +136,16 @@ export function joinRoom(roomCode, { onError } = {}) {
         },
       );
     });
+    peer.on('disconnected', () => {
+      if (settled) peer?.reconnect();
+    });
     peer.on('error', (err) => {
-      reject(err);
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+        return;
+      }
       onError?.(err);
     });
   });
