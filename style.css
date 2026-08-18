@@ -44,79 +44,217 @@ body {
   }
   
   :root {
-    --cell-width: 80px;
-    --cell-height: 78px;
-    --cell-gap: 8px;
+    --cell-width: 70px;
+    --cell-height: 68px;
+    --cell-gap: 6px;
   }
   
+  /* 縦向きレイアウトの最適化 */
   .boss-panel {
-    padding: 0.8rem;
-  }
-  
-  .boss-panel h2 {
-    font-size: 1.2rem;
-  }
-  
-  .boss-dice-box {
-    width: 44px;
-    height: 44px;
-    font-size: 1.4rem;
-  }
-  
-  .turn-pill {
-    font-size: 0.7rem;
-    padding: 0.3rem 0.6rem;
-  }
-  
-  .player-card {
-    min-width: 140px;
-    padding: 0.7rem 0.8rem;
-    font-size: 0.9rem;
-  }
-  
-  .player-header {
-    font-size: 1rem;
-  }
-  
-  .player-card-avatar {
-    width: 24px;
-    height: 24px;
-    font-size: 0.8rem;
-  }
-  
-  .dice-tray {
-    flex-wrap: wrap;
-    gap: 0.5rem;
-  }
-  
-  .dice-slot {
-    min-width: 60px;
-  }
-  
-  .dice-box {
-    width: 36px;
-    height: 36px;
-    font-size: 1.2rem;
-  }
-  
-  .dice-label {
-    font-size: 0.7rem;
+    order: -1; /* ボスパネルを最上部に */
   }
   
   .board {
-    overflow-x: auto;
+    order: 0; /* 盤面を中間に */
   }
   
+  .players {
+    order: 1; /* プレイヤーカードを下部に */
+  }
+  
+  .dice-tray {
+    order: 2; /* ダイスを最下部に */
+  }
+  
+  /* ボスパネル */
+  .boss-panel {
+    padding: 0.6rem;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  
+  .boss-panel h2 {
+    font-size: 1rem;
+    margin-bottom: 0.4rem;
+  }
+  
+  .boss-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.4rem;
+  }
+  
+  .boss-header-right {
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  
+  .boss-dice-box {
+    width: 40px;
+    height: 40px;
+    font-size: 1.2rem;
+  }
+  
+  .turn-pill {
+    font-size: 0.65rem;
+    padding: 0.25rem 0.5rem;
+  }
+  
+  .boss-hp-bar {
+    height: 14px;
+  }
+  
+  .boss-hp-label {
+    font-size: 0.8rem;
+  }
+  
+  /* プレイヤーカード */
+  .players {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  
+  .player-card {
+    min-width: 100%;
+    padding: 0.6rem;
+    font-size: 0.85rem;
+  }
+  
+  .player-header {
+    font-size: 0.95rem;
+  }
+  
+  .player-card-avatar {
+    width: 22px;
+    height: 22px;
+    font-size: 0.75rem;
+  }
+  
+  .player-hp-bar {
+    height: 12px;
+  }
+  
+  .player-hp-label {
+    font-size: 0.75rem;
+  }
+  
+  /* ダイス */
+  .dice-tray {
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    padding: 0.5rem;
+  }
+  
+  .dice-slot {
+    min-width: 50px;
+  }
+  
+  .dice-box {
+    width: 32px;
+    height: 32px;
+    font-size: 1rem;
+  }
+  
+  .dice-label {
+    font-size: 0.65rem;
+  }
+  
+  .dice-pill {
+    font-size: 0.75rem;
+    padding: 0.2rem 0.4rem;
+  }
+  
+  /* 盤面 */
+  .board {
+    overflow-x: auto;
+    padding: 0.5rem;
+  }
+  
+  .board-row {
+    min-width: max-content;
+  }
+  
+  .cell {
+    font-size: 0.7rem;
+  }
+  
+  .cell-icon-badge {
+    font-size: 1rem;
+  }
+  
+  .cell-label {
+    font-size: 0.65rem;
+  }
+  
+  .branch-header {
+    font-size: 0.75rem;
+  }
+  
+  /* モード選択ボタン */
   .mode-button {
-    padding: 1rem;
-    font-size: 0.9rem;
+    padding: 0.8rem;
+    font-size: 0.85rem;
   }
   
   .mode-button strong {
-    font-size: 1.1rem;
+    font-size: 1rem;
   }
   
   .mode-button span {
+    font-size: 0.75rem;
+  }
+  
+  /* オーバーレイ */
+  .remote-mirror-overlay {
+    font-size: 0.85rem;
+  }
+  
+  .turn-popup-content {
+    padding: 0.8rem;
+  }
+  
+  .turn-popup-message {
+    font-size: 0.85rem;
+  }
+  
+  /* ボタン */
+  .turn-button, .resolve-button, .branch-choice-button {
+    padding: 0.6rem 1rem;
+    font-size: 0.85rem;
+  }
+  
+  /* フォーム */
+  label {
+    font-size: 0.85rem;
+  }
+  
+  input, select {
+    padding: 0.5rem;
+    font-size: 0.9rem;
+  }
+  
+  button[type="submit"] {
+    padding: 0.7rem;
+    font-size: 0.9rem;
+  }
+  
+  /* ロビー */
+  .lobby {
+    padding: 0.8rem;
+  }
+  
+  .room-code-display {
+    font-size: 1.5rem;
+  }
+  
+  .lobby-roster-item {
+    font-size: 0.85rem;
+  }
+  
+  /* イベントログ */
+  .event-log {
     font-size: 0.8rem;
   }
 }
