@@ -28,6 +28,20 @@ export function generateJoinCode(rng) {
   return String(n).padStart(4, '0');
 }
 
+// PeerJSのデフォルト設定はSTUNのみのことがあり、対称NAT/制限の強いルーター
+// (WiFi中継機、一部の家庭用ルーター等)の組み合わせだとSTUNだけでは直接経路が
+// 見つからず接続できないことがある。中継(TURN)経路も明示的に加えて成功率を
+// 上げる(Open Relay Projectの無料TURN。認証情報は同プロジェクトが小規模利用
+// 向けに公開しているもので秘匿情報ではない)。
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+];
+const PEER_OPTIONS = { debug: 0, config: { iceServers: ICE_SERVERS } };
+
 let peer = null;
 let role = null; // 'host' | 'guest' | null
 let hostConnections = []; // ホスト側: 接続中の全ゲストDataConnection
@@ -57,7 +71,7 @@ function attachDataHandlers(conn, onOpen, onClose) {
 // サービスで、混雑時は接続確立に数秒〜まれに失敗することがある。ここで
 // タイムアウトを切って呼び出し元(main.js)が「新しい合言葉でもう一度」を
 // 試せるようにする。接続確立後に一時的に切れた場合は自動で1回だけ再接続を試みる。
-const CONNECT_TIMEOUT_MS = 15000;
+const CONNECT_TIMEOUT_MS = 20000;
 
 export function hostRoom(roomCode, { onGuestJoin, onGuestLeave, onError, timeoutMs = CONNECT_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
@@ -67,14 +81,14 @@ export function hostRoom(roomCode, { onGuestJoin, onGuestLeave, onError, timeout
     }
     role = 'host';
     hostConnections = [];
-    peer = new Peer(ROOM_ID_PREFIX + roomCode, { debug: 0 });
+    peer = new Peer(ROOM_ID_PREFIX + roomCode, PEER_OPTIONS);
 
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       peer?.destroy();
-      reject(new Error('接続がタイムアウトしました(サーバーが混み合っている可能性があります)。もう一度お試しください。'));
+      reject(new Error('通信サーバーへの接続がタイムアウトしました(この端末の通信環境をご確認ください)。もう一度お試しください。'));
     }, timeoutMs);
 
     peer.on('open', () => {
@@ -116,17 +130,26 @@ export function joinRoom(roomCode, { onError, timeoutMs = CONNECT_TIMEOUT_MS } =
       return;
     }
     role = 'guest';
-    peer = new Peer(undefined, { debug: 0 });
+    peer = new Peer(undefined, PEER_OPTIONS);
 
     let settled = false;
+    let brokerConnected = false;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       peer?.destroy();
-      reject(new Error('接続がタイムアウトしました(サーバーが混み合っている可能性があります)。もう一度お試しください。'));
+      // ブローカー(0.peerjs.com)にはつながったが、ホストとの直接接続(WebRTC)が
+      // 確立できなかった場合と、そもそもブローカーに届かなかった場合を区別する。
+      // 前者はホスト側の回線・ルーターの制限、後者はこの端末側の通信環境が原因の
+      // ことが多い。
+      const message = brokerConnected
+        ? 'ホストとの接続がタイムアウトしました(お互いのネットワークの制限で直接つながれない可能性があります)。'
+        : '通信サーバーへの接続がタイムアウトしました(この端末の通信環境をご確認ください)。';
+      reject(new Error(`${message}もう一度お試しください。`));
     }, timeoutMs);
 
     peer.on('open', () => {
+      brokerConnected = true;
       const conn = peer.connect(ROOM_ID_PREFIX + roomCode, { reliable: true });
       guestConnection = conn;
       attachDataHandlers(
