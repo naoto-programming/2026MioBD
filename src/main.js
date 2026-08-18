@@ -4,14 +4,14 @@
 // 行(このファイル・他のsrc/*.js内の該当import両方)の番号を上げること。
 // 上げ忘れると、ユーザーのブラウザがそのファイルだけ古いキャッシュのまま
 // 動き続けてしまう(修正したのに直っていないように見える不具合の原因になる)。
-import { CHARACTERS, rollCharacterAttack } from './characters.js?v=20260818a';
-import { createGameState, moveOnePlayer, playTurn, rollDie, sortPlayersByProgress, rollItemBuff } from './engine.js?v=20260818a';
-import { rollBossAttack, calculateTurnLimit, calculateTargetedBalance, BOSSES } from './boss.js?v=20260818d';
-import { branchesAt, ensureMapAhead, getCell } from './mapGenerator.js?v=20260818d';
-import { renderGame } from './render.js?v=20260818d';
-import { startBgm, playSfx, toggleMuted, isMuted } from './audio.js?v=20260818d';
-import * as net from './network.js?v=20260818d';
-import { generateJoinCode } from './network.js?v=20260818d';
+import { CHARACTERS, rollCharacterAttack } from './characters.js?v=20260818e';
+import { createGameState, moveOnePlayer, playTurn, rollDie, sortPlayersByProgress, rollItemBuff } from './engine.js?v=20260818e';
+import { rollBossAttack, calculateTurnLimit, calculateTargetedBalance, BOSSES } from './boss.js?v=20260818e';
+import { branchesAt, ensureMapAhead, getCell } from './mapGenerator.js?v=20260818e';
+import { renderGame } from './render.js?v=20260818e';
+import { startBgm, playSfx, toggleMuted, isMuted } from './audio.js?v=20260818e';
+import * as net from './network.js?v=20260818e';
+import { generateJoinCode } from './network.js?v=20260818e';
 
 const app = document.getElementById('app');
 let state = null;
@@ -368,6 +368,7 @@ function handleHostMessage(msg, conn) {
   }
   if (msg.type === 'moveRoll') {
     spinDice(msg.playerId, msg.value, 'move');
+    playSfx('diceConfirm');
     net.broadcast({ type: 'moveRoll', playerId: msg.playerId, value: msg.value }, conn);
     return;
   }
@@ -375,6 +376,7 @@ function handleHostMessage(msg, conn) {
     if (pendingRemoteEffectResolve && pendingRemoteEffectResolve.playerId === msg.playerId) {
       const resolve = pendingRemoteEffectResolve.resolve;
       pendingRemoteEffectResolve = null;
+      playSfx('diceConfirm');
       resolve(msg.value);
     }
     return;
@@ -383,6 +385,7 @@ function handleHostMessage(msg, conn) {
     if (pendingRemoteBranchResolve && pendingRemoteBranchResolve.playerId === msg.playerId) {
       const resolve = pendingRemoteBranchResolve.resolve;
       pendingRemoteBranchResolve = null;
+      playSfx('confirm');
       resolve(msg.choice);
     }
     return;
@@ -425,8 +428,21 @@ function handleGuestMessage(msg) {
   }
   if (msg.type === 'overlay') {
     applyRemoteOverlay(msg.html, msg.meta);
+    // メタデータに基づいて適切な効果音を再生
     if (msg.meta?.type === 'bossAttack') {
       playSfx('bossAttack');
+    } else if (msg.meta?.type === 'heal') {
+      playSfx('heal');
+    } else if (msg.meta?.type === 'attack') {
+      playSfx('playerAttack');
+    } else if (msg.meta?.type === 'defense') {
+      playSfx('defense');
+    } else if (msg.meta?.type === 'item') {
+      playSfx('treasure');
+    } else if (msg.meta?.type === 'miss') {
+      playSfx('miss');
+    } else if (msg.meta?.type === 'death') {
+      playSfx('allyDeath');
     }
     return;
   }
@@ -1155,7 +1171,7 @@ async function renderEffectRollScreen() {
 
       const paint = (dieText, resultHtml = '') => {
         contentDiv.innerHTML = buildEffectPopupContentHtml(player.name, cellKind, tableHtml, dieText, resultHtml);
-        mirrorOverlay(contentDiv.innerHTML, { kind: 'effectRoll', playerId: player.id, cellType: cell.type });
+        // mirrorOverlayはfinish関数内で効果音タイプと一緒に呼ばれる
       };
 
       let intervalId = null;
@@ -1164,16 +1180,36 @@ async function renderEffectRollScreen() {
         if (intervalId) window.clearInterval(intervalId);
         updateActivePlayerGlow(false);
 
-        if (cell.type === 'heal') playSfx('heal');
-        if (cell.type === 'attack') playSfx('playerAttack');
-        if (cell.type === 'defense') playSfx('defense');
-        if (cell.type === 'item') playSfx('treasure');
-        if (cell.type === 'damage' && value <= 2) playSfx('miss');
+        let sfxType = null;
+        if (cell.type === 'heal') {
+          playSfx('heal');
+          sfxType = 'heal';
+        }
+        if (cell.type === 'attack') {
+          playSfx('playerAttack');
+          sfxType = 'attack';
+        }
+        if (cell.type === 'defense') {
+          playSfx('defense');
+          sfxType = 'defense';
+        }
+        if (cell.type === 'item') {
+          playSfx('treasure');
+          sfxType = 'item';
+        }
+        if (cell.type === 'damage' && value <= 2) {
+          playSfx('miss');
+          sfxType = 'miss';
+        }
 
         effectRolls[player.id] = value;
         const resultText = describeCellEffect(player, cell, value);
         paint(String(value), `<div class="die-face-result">→ ${resultText}</div>`);
-        setTimeout(() => resolve(value), 2000);
+        // 効果音タイプをオーバーレイメタデータに含める
+        setTimeout(() => {
+          mirrorOverlay(contentDiv.innerHTML, { kind: 'effectRoll', playerId: player.id, cellType: cell.type, type: sfxType });
+          resolve(value);
+        }, 2000);
       };
 
       if (isLocalTurn) {
@@ -1296,7 +1332,7 @@ async function resolveTurn() {
     }
     deathOverlay.appendChild(deathPanel);
     app.appendChild(deathOverlay);
-    mirrorOverlay(deathPanel.innerHTML, null);
+    mirrorOverlay(deathPanel.innerHTML, { type: 'death' });
     await new Promise((resolve) => window.setTimeout(resolve, 2200));
     deathOverlay.remove();
   }
