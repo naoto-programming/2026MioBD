@@ -1,7 +1,7 @@
 // importの ?v=... はブラウザ/GitHub Pagesのキャッシュ対策(src/main.js冒頭のコメント参照)。
-import { createInitialMap, ensureMapAhead, trimOldTrunkCells, branchesAt, getCell } from './mapGenerator.js?v=20260818a';
-import { CHARACTERS, rollCharacterAttack } from './characters.js?v=20260818a';
-import { BOSSES, calculateTargetedBalance, calculateTurnLimit, rollBossAttack } from './boss.js?v=20260818a';
+import { createInitialMap, ensureMapAhead, trimOldTrunkCells, branchesAt, getCell } from './mapGenerator.js?v=20260818e';
+import { CHARACTERS, rollCharacterAttack } from './characters.js?v=20260818e';
+import { BOSSES, calculateTargetedBalance, calculateTurnLimit, rollBossAttack } from './boss.js?v=20260818e';
 
 export function rollDie(rng = Math.random) {
   return Math.min(6, Math.floor(rng() * 6) + 1);
