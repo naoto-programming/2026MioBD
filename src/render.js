@@ -1,6 +1,6 @@
 // src/render.js
 // importの ?v=... はブラウザ/GitHub Pagesのキャッシュ対策(src/main.js冒頭のコメント参照)。
-import { getCell } from './mapGenerator.js?v=20260818d';
+import { getCell } from './mapGenerator.js?v=20260818e';
 
 const BOARD_WINDOW = 10; // 各プレイヤーの前後何マスを表示するか
 const CELL_LABELS = { attack: '攻撃', defense: '守備', heal: '回復', item: '宝', damage: 'ダメージ' };
@@ -15,7 +15,7 @@ export const PLAYER_COLORS = ['#FF5B39', '#4FC3F7', '#3DDC97', '#FFC94A', '#FF4F
 // モバイル対応のために動的に値を取得する
 function getCellDimensions() {
   if (typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches) {
-    return { width: 80, gap: 8, stride: 88 };
+    return { width: 70, gap: 6, stride: 76 };
   }
   return { width: 132, gap: 16, stride: 148 };
 }
@@ -27,6 +27,7 @@ const CELL_STRIDE = CELL_WIDTH + CELL_GAP;
 
 export function renderGame(state, container) {
   container.innerHTML = '';
+  // モバイルの場合はCSSのorderプロパティで表示順序を制御
   container.appendChild(renderBoss(state));
   container.appendChild(renderBoard(state));
   container.appendChild(renderPlayers(state));
