@@ -4,14 +4,14 @@
 // 行(このファイル・他のsrc/*.js内の該当import両方)の番号を上げること。
 // 上げ忘れると、ユーザーのブラウザがそのファイルだけ古いキャッシュのまま
 // 動き続けてしまう(修正したのに直っていないように見える不具合の原因になる)。
-import { CHARACTERS, rollCharacterAttack } from './characters.js?v=20260818f';
-import { createGameState, moveOnePlayer, playTurn, rollDie, sortPlayersByProgress, rollItemBuff } from './engine.js?v=20260818f';
-import { rollBossAttack, calculateTurnLimit, calculateTargetedBalance, BOSSES } from './boss.js?v=20260818f';
-import { branchesAt, ensureMapAhead, getCell } from './mapGenerator.js?v=20260818f';
-import { renderGame } from './render.js?v=20260818f';
-import { startBgm, playSfx, toggleMuted, isMuted } from './audio.js?v=20260818f';
-import * as net from './network.js?v=20260818f';
-import { generateJoinCode } from './network.js?v=20260818f';
+import { CHARACTERS, rollCharacterAttack } from './characters.js?v=20260818g';
+import { createGameState, moveOnePlayer, playTurn, rollDie, sortPlayersByProgress, rollItemBuff } from './engine.js?v=20260818g';
+import { rollBossAttack, calculateTurnLimit, calculateTargetedBalance, BOSSES } from './boss.js?v=20260818g';
+import { branchesAt, ensureMapAhead, getCell } from './mapGenerator.js?v=20260818g';
+import { renderGame } from './render.js?v=20260818g';
+import { startBgm, playSfx, toggleMuted, isMuted } from './audio.js?v=20260818g';
+import * as net from './network.js?v=20260818g';
+import { generateJoinCode } from './network.js?v=20260818g';
 
 const app = document.getElementById('app');
 let state = null;
