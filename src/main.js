@@ -1,12 +1,17 @@
 // src/main.js
-import { CHARACTERS, rollCharacterAttack } from './characters.js';
-import { createGameState, moveOnePlayer, playTurn, rollDie, sortPlayersByProgress, rollItemBuff } from './engine.js';
-import { rollBossAttack, calculateTurnLimit, calculateTargetedBalance, BOSSES } from './boss.js';
-import { branchesAt, ensureMapAhead, getCell } from './mapGenerator.js';
-import { renderGame } from './render.js';
-import { startBgm, playSfx, toggleMuted, isMuted } from './audio.js';
-import * as net from './network.js';
-import { generateJoinCode } from './network.js';
+// 各importの末尾の ?v=YYYYMMDDn はブラウザ/GitHub Pagesのキャッシュ対策。
+// このファイルが読み込む側のファイルに変更を入れたら、そのファイルへのimport
+// 行(このファイル・他のsrc/*.js内の該当import両方)の番号を上げること。
+// 上げ忘れると、ユーザーのブラウザがそのファイルだけ古いキャッシュのまま
+// 動き続けてしまう(修正したのに直っていないように見える不具合の原因になる)。
+import { CHARACTERS, rollCharacterAttack } from './characters.js?v=20260818a';
+import { createGameState, moveOnePlayer, playTurn, rollDie, sortPlayersByProgress, rollItemBuff } from './engine.js?v=20260818a';
+import { rollBossAttack, calculateTurnLimit, calculateTargetedBalance, BOSSES } from './boss.js?v=20260818a';
+import { branchesAt, ensureMapAhead, getCell } from './mapGenerator.js?v=20260818a';
+import { renderGame } from './render.js?v=20260818a';
+import { startBgm, playSfx, toggleMuted, isMuted } from './audio.js?v=20260818a';
+import * as net from './network.js?v=20260818a';
+import { generateJoinCode } from './network.js?v=20260818a';
 
 const app = document.getElementById('app');
 let state = null;
