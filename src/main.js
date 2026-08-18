@@ -6,12 +6,12 @@
 // 動き続けてしまう(修正したのに直っていないように見える不具合の原因になる)。
 import { CHARACTERS, rollCharacterAttack } from './characters.js?v=20260818a';
 import { createGameState, moveOnePlayer, playTurn, rollDie, sortPlayersByProgress, rollItemBuff } from './engine.js?v=20260818a';
-import { rollBossAttack, calculateTurnLimit, calculateTargetedBalance, BOSSES } from './boss.js?v=20260818a';
-import { branchesAt, ensureMapAhead, getCell } from './mapGenerator.js?v=20260818a';
-import { renderGame } from './render.js?v=20260818a';
-import { startBgm, playSfx, toggleMuted, isMuted } from './audio.js?v=20260818a';
-import * as net from './network.js?v=20260818c';
-import { generateJoinCode } from './network.js?v=20260818c';
+import { rollBossAttack, calculateTurnLimit, calculateTargetedBalance, BOSSES } from './boss.js?v=20260818d';
+import { branchesAt, ensureMapAhead, getCell } from './mapGenerator.js?v=20260818d';
+import { renderGame } from './render.js?v=20260818d';
+import { startBgm, playSfx, toggleMuted, isMuted } from './audio.js?v=20260818d';
+import * as net from './network.js?v=20260818d';
+import { generateJoinCode } from './network.js?v=20260818d';
 
 const app = document.getElementById('app');
 let state = null;
@@ -404,11 +404,13 @@ function handleGuestMessage(msg) {
     phase = 'move';
     activeMovePlayerId = state.players[0]?.id ?? null;
     startBgm();
+    playSfx('confirm');
     renderTurnScreen();
     return;
   }
   if (msg.type === 'moveRoll') {
     spinDice(msg.playerId, msg.value, 'move');
+    playSfx('diceConfirm');
     return;
   }
   if (msg.type === 'scene') {
@@ -418,10 +420,14 @@ function handleGuestMessage(msg) {
   }
   if (msg.type === 'banner') {
     app.appendChild(renderPhaseBanner(msg.title, msg.subtitle));
+    playSfx('confirm');
     return;
   }
   if (msg.type === 'overlay') {
     applyRemoteOverlay(msg.html, msg.meta);
+    if (msg.meta?.type === 'bossAttack') {
+      playSfx('bossAttack');
+    }
     return;
   }
   if (msg.type === 'turnReset') {
@@ -430,6 +436,7 @@ function handleGuestMessage(msg) {
     clearDiceIntervals();
     phase = 'move';
     activeMovePlayerId = null;
+    playSfx('confirm');
     renderTurnScreen();
     return;
   }
@@ -440,6 +447,9 @@ function handleGuestMessage(msg) {
     banner.textContent = msg.result === 'win' ? '勝利!' : '敗北...';
     app.appendChild(banner);
     app.appendChild(renderEventLogForState(state));
+    if (msg.result === 'win') {
+      playSfx('bossDefeated');
+    }
     return;
   }
 }
@@ -640,19 +650,8 @@ function renderDiceTray(displayState = state, valueSet = 'move') {
   const tray = document.createElement('div');
   tray.className = 'dice-tray';
 
-  if (displayState?.boss && displayState.boss.lastRoll !== undefined && displayState.boss.lastRoll !== null) {
-    const bossSlot = document.createElement('div');
-    bossSlot.className = 'dice-slot';
-    const bossBox = document.createElement('div');
-    bossBox.className = 'dice-box';
-    bossBox.textContent = String(displayState.boss.lastRoll);
-    const bossLabel = document.createElement('span');
-    bossLabel.className = 'dice-label';
-    bossLabel.textContent = 'ボス';
-    bossSlot.appendChild(bossBox);
-    bossSlot.appendChild(bossLabel);
-    tray.appendChild(bossSlot);
-  }
+  // ボスのサイコロは右上のボスパネルにのみ表示し、ここには表示しない
+  // (render.jsのrenderBoss関数でボスパネルに表示済み)
 
   for (const player of displayState.players) {
     const slot = document.createElement('div');
@@ -1352,7 +1351,7 @@ async function resolveTurn() {
   bossPanel.appendChild(bossDieBox);
   bossOverlay.appendChild(bossPanel);
   app.appendChild(bossOverlay);
-  mirrorOverlay(bossPanel.innerHTML, null);
+  mirrorOverlay(bossPanel.innerHTML, { type: 'bossAttack' });
   playSfx('bossAttack');
 
   const bossIntervalId = window.setInterval(() => {
