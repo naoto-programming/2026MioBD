@@ -33,6 +33,94 @@ body {
   color: var(--ink);
 }
 
+/* モバイル対応 */
+@media (max-width: 768px) {
+  body {
+    padding: 0.5rem;
+  }
+  
+  #app {
+    max-width: 100%;
+  }
+  
+  :root {
+    --cell-width: 80px;
+    --cell-height: 78px;
+    --cell-gap: 8px;
+  }
+  
+  .boss-panel {
+    padding: 0.8rem;
+  }
+  
+  .boss-panel h2 {
+    font-size: 1.2rem;
+  }
+  
+  .boss-dice-box {
+    width: 44px;
+    height: 44px;
+    font-size: 1.4rem;
+  }
+  
+  .turn-pill {
+    font-size: 0.7rem;
+    padding: 0.3rem 0.6rem;
+  }
+  
+  .player-card {
+    min-width: 140px;
+    padding: 0.7rem 0.8rem;
+    font-size: 0.9rem;
+  }
+  
+  .player-header {
+    font-size: 1rem;
+  }
+  
+  .player-card-avatar {
+    width: 24px;
+    height: 24px;
+    font-size: 0.8rem;
+  }
+  
+  .dice-tray {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  
+  .dice-slot {
+    min-width: 60px;
+  }
+  
+  .dice-box {
+    width: 36px;
+    height: 36px;
+    font-size: 1.2rem;
+  }
+  
+  .dice-label {
+    font-size: 0.7rem;
+  }
+  
+  .board {
+    overflow-x: auto;
+  }
+  
+  .mode-button {
+    padding: 1rem;
+    font-size: 0.9rem;
+  }
+  
+  .mode-button strong {
+    font-size: 1.1rem;
+  }
+  
+  .mode-button span {
+    font-size: 0.8rem;
+  }
+}
+
 #app {
   max-width: 1320px;
   margin: 0 auto;
