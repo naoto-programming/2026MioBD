@@ -10,8 +10,8 @@ import { rollBossAttack, calculateTurnLimit, calculateTargetedBalance, BOSSES } 
 import { branchesAt, ensureMapAhead, getCell } from './mapGenerator.js?v=20260818a';
 import { renderGame } from './render.js?v=20260818a';
 import { startBgm, playSfx, toggleMuted, isMuted } from './audio.js?v=20260818a';
-import * as net from './network.js?v=20260818a';
-import { generateJoinCode } from './network.js?v=20260818a';
+import * as net from './network.js?v=20260818c';
+import { generateJoinCode } from './network.js?v=20260818c';
 
 const app = document.getElementById('app');
 let state = null;
