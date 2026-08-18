@@ -49,7 +49,17 @@ const ICE_SERVERS = [
   { urls: 'turn:freeturn.net:3478?transport=tcp', username: 'free', credential: 'free' },
   { urls: 'turns:freeturn.net:5349', username: 'free', credential: 'free' },
 ];
-const PEER_OPTIONS = { debug: 0, config: { iceServers: ICE_SERVERS } };
+// PeerJS Cloud (0.peerjs.com)は不安定なため、perperikの公共サーバーを使用
+const PEER_OPTIONS = { 
+  debug: 0, 
+  config: { iceServers: ICE_SERVERS },
+  host: 'perperik.fly.dev',
+  port: 443,
+  path: '/',
+  secure: true,
+  // WebSocket接続が不安定な場合の再接続設定
+  pingInterval: 5000,  // 5秒ごとにpingを送信して接続を維持
+};
 
 let peer = null;
 let role = null; // 'host' | 'guest' | null
