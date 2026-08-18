@@ -6,6 +6,7 @@ import { branchesAt, ensureMapAhead, getCell } from './mapGenerator.js';
 import { renderGame } from './render.js';
 import { startBgm, playSfx, toggleMuted, isMuted } from './audio.js';
 import * as net from './network.js';
+import { generateJoinCode } from './network.js';
 
 const app = document.getElementById('app');
 let state = null;
@@ -22,13 +23,13 @@ let activeMovePlayerId = null;
 // これ以外のプレイヤー分は押せないようにする)。
 let onlineRole = null;
 let localPlayerId = null;
+let roomCode = null;
 let hostInfo = null; // { name, characterId }
-let hostGuestRoster = []; // ホスト側: [{ channel, name, characterId }] 参加順
+let hostGuestRoster = []; // ホスト側: [{ conn, name, characterId }] 参加順
 let hostTargetMinutes = 30;
 let guestRosterView = []; // ゲスト側: ホストから受け取った参加者一覧の表示用コピー
 let pendingRemoteEffectResolve = null; // ホスト側: 他プレイヤーの効果マス出目待ち
 let pendingRemoteBranchResolve = null; // ホスト側: 他プレイヤーの分岐選択待ち
-let stopAwaitingAnswer = null; // ホスト側: 合言葉に対するアンサー待ち(SSE)の購読解除
 
 // ターン数から大まかな目安時間を出す(1ターンあたり移動+効果判定+ボス攻撃の
 // ポップアップ演出でおよそ20秒とみて概算)。あくまで目安の表示用。
@@ -58,20 +59,12 @@ function wireMuteButton() {
   syncMuteButton();
 }
 
-function stopAwaitingAnswerIfAny() {
-  stopAwaitingAnswer?.();
-  stopAwaitingAnswer = null;
-}
-
 function appendBackButton(label, onClick) {
   const backButton = document.createElement('button');
   backButton.type = 'button';
   backButton.className = 'back-button';
   backButton.textContent = label;
-  backButton.addEventListener('click', () => {
-    stopAwaitingAnswerIfAny();
-    onClick();
-  });
+  backButton.addEventListener('click', onClick);
   app.appendChild(backButton);
   return backButton;
 }
@@ -79,10 +72,10 @@ function appendBackButton(label, onClick) {
 // ---------- モード選択・オンライン対戦の部屋まわり ----------
 
 function renderModeSelectScreen() {
-  stopAwaitingAnswerIfAny();
   net.disconnectAll();
   onlineRole = null;
   localPlayerId = null;
+  roomCode = null;
   hostGuestRoster = [];
   guestRosterView = [];
   state = null;
@@ -166,19 +159,51 @@ function renderHostSetupScreen() {
   app.appendChild(form);
   appendBackButton('戻る', () => renderOnlineChoiceScreen());
 
-  form.addEventListener('submit', (event) => {
+  form.addEventListener('submit', async (event) => {
     event.preventDefault();
+    const submitButton = form.querySelector('button[type="submit"]');
+    submitButton.disabled = true;
+    submitButton.textContent = '接続中…';
+
     hostInfo = {
       name: form.querySelector('#hostName').value || 'ホスト',
       characterId: form.querySelector('#hostCharacter').value,
     };
     hostTargetMinutes = Math.min(120, Math.max(5, Number(form.querySelector('#hostTargetMinutes').value) || 30));
     hostGuestRoster = [];
+
+    let joined = false;
+    let lastError = null;
+    const maxAttempts = 3;
+    for (let attempt = 0; attempt < maxAttempts && !joined; attempt++) {
+      submitButton.textContent = attempt === 0 ? '接続中…' : `接続中…(試行 ${attempt + 1}/${maxAttempts})`;
+      const code = generateJoinCode();
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        await net.hostRoom(code, {
+          onGuestLeave: (conn) => {
+            hostGuestRoster = hostGuestRoster.filter((g) => g.conn !== conn);
+            broadcastRoster();
+            if (!state) renderHostLobbyScreen();
+          },
+        });
+        roomCode = code;
+        joined = true;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+
+    if (!joined) {
+      submitButton.disabled = false;
+      submitButton.textContent = '部屋を作る';
+      alert(`部屋を作れませんでした(通信サーバーが混み合っている可能性があります。時間をおいて再度お試しください): ${lastError?.message ?? lastError}`);
+      return;
+    }
+
     onlineRole = 'host';
     localPlayerId = 'p0';
-    net.setRole('host');
     net.onMessage(handleHostMessage);
-    playSfx('confirm');
     renderHostLobbyScreen();
   });
 }
@@ -198,97 +223,22 @@ function renderHostLobbyScreen() {
   const totalPlayers = 1 + hostGuestRoster.length;
   const balance = calculateTargetedBalance(totalPlayers, hostTargetMinutes);
   wrap.innerHTML = `
-    <h1>ゲストを招待</h1>
-    <p class="mode-select-lead">「ゲストを追加」で4桁の合言葉が出ます。相手に伝えて入力してもらえば、自動で接続完了です(同じWiFi推奨)。</p>
+    <h1>部屋を作りました</h1>
+    <div class="room-code-display">${roomCode}</div>
+    <p class="mode-select-lead">この合言葉を他の人に伝えてください(同じWiFi推奨)</p>
     <div class="lobby-roster">
       <div class="lobby-roster-item">${hostInfo.name}(${CHARACTERS[hostInfo.characterId]?.name ?? hostInfo.characterId})・ホスト</div>
       ${hostGuestRoster.map((g) => `<div class="lobby-roster-item">${g.name}(${CHARACTERS[g.characterId]?.name ?? g.characterId})</div>`).join('')}
     </div>
     <p class="turn-limit-hint">目標 ${hostTargetMinutes}分 / 現在${totalPlayers}人 → ボス ${balance.bossName} / 予想${balance.turnLimit}ターン</p>
-    <button type="button" id="addGuest">ゲストを追加</button>
     <button type="button" id="startOnlineGame">ゲーム開始</button>
   `;
   app.appendChild(wrap);
   appendBackButton('部屋を閉じる', () => renderModeSelectScreen());
 
-  wrap.querySelector('#addGuest').addEventListener('click', () => {
-    playSfx('confirm');
-    beginNewGuestPairing();
-  });
   wrap.querySelector('#startOnlineGame').addEventListener('click', () => {
     playSfx('confirm');
     startOnlineHostGame();
-  });
-}
-
-async function beginNewGuestPairing() {
-  app.innerHTML = '';
-  const wrap = document.createElement('div');
-  wrap.className = 'lobby';
-  wrap.innerHTML = `
-    <h1>ゲストを招待</h1>
-    <p class="mode-select-lead">この4桁の合言葉を参加者に伝えてください</p>
-    <p id="pairingStatus" class="turn-limit-hint">合言葉を発行しています…</p>
-  `;
-  app.appendChild(wrap);
-  const pending = { code: null, connection: null, timeout: null };
-  appendBackButton('キャンセル', () => {
-    if (pending.timeout) window.clearTimeout(pending.timeout);
-    if (pending.code) net.clearRoom(pending.code);
-    pending.connection?.close();
-    renderHostLobbyScreen();
-  });
-
-  let code;
-  try {
-    code = await net.reserveJoinCode();
-  } catch (err) {
-    alert(`合言葉を発行できませんでした: ${err?.message ?? err}`);
-    renderHostLobbyScreen();
-    return;
-  }
-  pending.code = code;
-
-  const codeDisplay = document.createElement('div');
-  codeDisplay.className = 'room-code-display';
-  codeDisplay.textContent = code;
-  wrap.querySelector('#pairingStatus').before(codeDisplay);
-  wrap.querySelector('#pairingStatus').textContent = '参加を待っています…';
-
-  const { connection, dataChannel, payload } = await net.createHostOffer();
-  pending.connection = connection;
-  await net.publishOffer(code, payload);
-
-  dataChannel.onopen = () => {
-    net.registerHostChannel(connection, dataChannel, {
-      onClose: (channel) => {
-        hostGuestRoster = hostGuestRoster.filter((g) => g.channel !== channel);
-        broadcastRoster();
-        if (!state) renderHostLobbyScreen();
-      },
-    });
-  };
-
-  // 合言葉は4桁(1万通り)しかなく、公開しっぱなしだと総当たりされ得る。
-  // 使わなくなったら早めに片付け、有効な時間を短く保つ。
-  pending.timeout = window.setTimeout(() => {
-    stopAwaitingAnswer?.();
-    stopAwaitingAnswer = null;
-    net.clearRoom(code);
-    connection.close();
-    alert('しばらく応答がなかったため、この合言葉は無効にしました。もう一度「ゲストを追加」からやり直してください。');
-    renderHostLobbyScreen();
-  }, 3 * 60 * 1000);
-
-  stopAwaitingAnswer = net.awaitAnswer(code, async (answerText) => {
-    window.clearTimeout(pending.timeout);
-    stopAwaitingAnswer = null;
-    await net.acceptAnswer(connection, answerText);
-    await net.clearRoom(code);
-    const status = wrap.querySelector('#pairingStatus');
-    if (status) status.textContent = '接続しています…';
-    // dataChannel.onopenが発火すればregisterHostChannelされ、相手からのjoin
-    // メッセージ受信時にrenderHostLobbyScreenへ自動的に戻る(handleHostMessage参照)。
   });
 }
 
@@ -299,7 +249,7 @@ function startOnlineHostGame() {
   ];
   startGame(selections, null, hostTargetMinutes);
   hostGuestRoster.forEach((g, i) => {
-    net.sendTo(g.channel, { type: 'gameStart', state, yourPlayerId: `p${i + 1}` });
+    g.conn.send({ type: 'gameStart', state, yourPlayerId: `p${i + 1}` });
   });
 }
 
@@ -324,65 +274,61 @@ function renderGuestJoinScreen() {
   app.appendChild(form);
   appendBackButton('戻る', () => renderOnlineChoiceScreen());
 
-  form.addEventListener('submit', (event) => {
+  form.addEventListener('submit', async (event) => {
     event.preventDefault();
+    const submitButton = form.querySelector('button[type="submit"]');
     const code = form.querySelector('#joinCode').value.trim();
     if (!/^\d{4}$/.test(code)) {
       alert('4桁の数字で入力してください');
       return;
     }
+
+    submitButton.disabled = true;
+    submitButton.textContent = '接続中…';
     const guestName = form.querySelector('#guestName').value || 'プレイヤー';
     const guestCharacterId = form.querySelector('#guestCharacter').value;
+
+    let joined = false;
+    let lastError = null;
+    const maxAttempts = 3;
+    for (let attempt = 0; attempt < maxAttempts && !joined; attempt++) {
+      submitButton.textContent = attempt === 0 ? '接続中…' : `接続中…(試行 ${attempt + 1}/${maxAttempts})`;
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        await net.joinRoom(code, {
+          onError: () => {
+            if (!state) {
+              alert('ホストとの接続が切れました');
+              renderModeSelectScreen();
+            }
+          },
+        });
+        joined = true;
+      } catch (err) {
+        lastError = err;
+        // 合言葉自体が間違っている(部屋が存在しない)場合は何度試しても無駄なので
+        // 通信エラーとは分けて即座にあきらめる。
+        if (err?.type === 'peer-unavailable') break;
+      }
+    }
+
+    if (!joined) {
+      submitButton.disabled = false;
+      submitButton.textContent = '参加する';
+      const message = lastError?.type === 'peer-unavailable'
+        ? '部屋が見つかりませんでした。合言葉を確認してください。'
+        : `部屋に入れませんでした(通信サーバーが混み合っている可能性があります。時間をおいて再度お試しください): ${lastError?.message ?? lastError}`;
+      alert(message);
+      return;
+    }
+
     onlineRole = 'guest';
-    net.setRole('guest');
-    connectGuestToRoom(code, guestName, guestCharacterId);
+    roomCode = code;
+    guestRosterView = [];
+    net.onMessage(handleGuestMessage);
+    net.send({ type: 'join', name: guestName, characterId: guestCharacterId });
+    renderGuestWaitingScreen();
   });
-}
-
-async function connectGuestToRoom(code, guestName, guestCharacterId) {
-  app.innerHTML = '';
-  const wrap = document.createElement('div');
-  wrap.className = 'lobby';
-  wrap.innerHTML = `
-    <h1>ホストに接続</h1>
-    <p class="mode-select-lead">接続しています…</p>
-  `;
-  app.appendChild(wrap);
-  appendBackButton('戻る', () => renderOnlineChoiceScreen());
-
-  let offerText;
-  try {
-    offerText = await net.fetchOffer(code);
-  } catch (err) {
-    alert(`接続に失敗しました: ${err?.message ?? err}`);
-    renderGuestJoinScreen();
-    return;
-  }
-  if (!offerText) {
-    alert('部屋が見つかりませんでした。合言葉を確認してください。');
-    renderGuestJoinScreen();
-    return;
-  }
-
-  const { connection, payload } = await net.createAnswerFromOffer(offerText);
-  net.onDataChannelReady(connection, (channel) => {
-    channel.onopen = () => {
-      net.registerGuestChannel(connection, channel, {
-        onClose: () => {
-          if (!state) return;
-          alert('ホストとの接続が切れました');
-          renderModeSelectScreen();
-        },
-      });
-      net.onMessage(handleGuestMessage);
-      net.send({ type: 'join', name: guestName, characterId: guestCharacterId });
-      renderGuestWaitingScreen();
-    };
-  });
-  await net.publishAnswer(code, payload);
-
-  const lead = wrap.querySelector('.mode-select-lead');
-  if (lead) lead.textContent = 'ホストの応答を待っています…';
 }
 
 function renderGuestWaitingScreen() {
@@ -402,14 +348,14 @@ function renderGuestWaitingScreen() {
 
 // ---------- ホスト/ゲスト間のメッセージ処理 ----------
 
-function handleHostMessage(msg, channel) {
+function handleHostMessage(msg, conn) {
   if (msg.type === 'join') {
-    const existing = hostGuestRoster.find((g) => g.channel === channel);
+    const existing = hostGuestRoster.find((g) => g.conn === conn);
     if (existing) {
       existing.name = msg.name;
       existing.characterId = msg.characterId;
     } else {
-      hostGuestRoster.push({ channel, name: msg.name, characterId: msg.characterId });
+      hostGuestRoster.push({ conn, name: msg.name, characterId: msg.characterId });
     }
     broadcastRoster();
     if (!state) renderHostLobbyScreen();
@@ -417,7 +363,7 @@ function handleHostMessage(msg, channel) {
   }
   if (msg.type === 'moveRoll') {
     spinDice(msg.playerId, msg.value, 'move');
-    net.broadcast({ type: 'moveRoll', playerId: msg.playerId, value: msg.value }, channel);
+    net.broadcast({ type: 'moveRoll', playerId: msg.playerId, value: msg.value }, conn);
     return;
   }
   if (msg.type === 'effectRollValue') {
