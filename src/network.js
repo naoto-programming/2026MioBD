@@ -49,16 +49,12 @@ const ICE_SERVERS = [
   { urls: 'turn:freeturn.net:3478?transport=tcp', username: 'free', credential: 'free' },
   { urls: 'turns:freeturn.net:5349', username: 'free', credential: 'free' },
 ];
-// PeerJS Cloud (0.peerjs.com)は不安定なため、perperikの公共サーバーを使用
+// PeerJS Cloudは不安定だが、最も互換性が高い。再接続ロジックで対応する。
 const PEER_OPTIONS = { 
   debug: 0, 
   config: { iceServers: ICE_SERVERS },
-  host: 'perperik.fly.dev',
-  port: 443,
-  path: '/',
-  secure: true,
   // WebSocket接続が不安定な場合の再接続設定
-  pingInterval: 5000,  // 5秒ごとにpingを送信して接続を維持
+  pingInterval: 3000,  // 3秒ごとにpingを送信して接続を維持
 };
 
 let peer = null;
@@ -66,6 +62,9 @@ let role = null; // 'host' | 'guest' | null
 let hostConnections = []; // ホスト側: 接続中の全ゲストDataConnection
 let guestConnection = null; // ゲスト側: ホストへの単一DataConnection
 let messageHandler = () => {};
+let reconnectAttempts = 0;
+let maxReconnectAttempts = 5;
+let reconnectDelay = 1000; // 初期再接続遅延1秒
 
 export function getRole() {
   return role;
@@ -102,6 +101,7 @@ export function hostRoom(roomCode, { onGuestJoin, onGuestLeave, onError, timeout
     }
     role = 'host';
     hostConnections = [];
+    reconnectAttempts = 0;
     console.log(`[Network] Hosting room: ${ROOM_ID_PREFIX + roomCode}`);
     peer = new Peer(ROOM_ID_PREFIX + roomCode, PEER_OPTIONS);
 
@@ -118,13 +118,31 @@ export function hostRoom(roomCode, { onGuestJoin, onGuestLeave, onError, timeout
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      reconnectAttempts = 0; // 接続成功でリセット
       console.log(`[Network] Host room opened successfully: ${roomCode}`);
       resolve(roomCode);
     });
+    
     peer.on('disconnected', () => {
-      console.warn('[Network] Host peer disconnected, attempting reconnect');
-      if (settled) peer?.reconnect();
+      if (!settled) return; // 初期接続中は無視
+      
+      console.warn(`[Network] Host peer disconnected, attempt ${reconnectAttempts + 1}/${maxReconnectAttempts}`);
+      
+      if (reconnectAttempts < maxReconnectAttempts) {
+        reconnectAttempts++;
+        const delay = reconnectDelay * Math.pow(2, reconnectAttempts - 1); // 指数バックオフ
+        console.log(`[Network] Reconnecting in ${delay}ms...`);
+        setTimeout(() => {
+          if (peer && !peer.destroyed) {
+            peer.reconnect();
+          }
+        }, delay);
+      } else {
+        console.error('[Network] Max reconnection attempts reached');
+        onError?.(new Error('シグナリングサーバーとの接続が失われました。'));
+      }
     });
+    
     peer.on('error', (err) => {
       console.error('[Network] Host peer error:', err.type, err);
       if (!settled) {
@@ -133,8 +151,10 @@ export function hostRoom(roomCode, { onGuestJoin, onGuestLeave, onError, timeout
         reject(err);
         return;
       }
+      // 接続確立後のエラーはonErrorコールバックへ
       onError?.(err);
     });
+    
     peer.on('connection', (conn) => {
       console.log('[Network] Guest connection attempt from peer:', conn.peer);
       hostConnections.push(conn);
@@ -161,6 +181,7 @@ export function joinRoom(roomCode, { onError, timeoutMs = CONNECT_TIMEOUT_MS } =
       return;
     }
     role = 'guest';
+    reconnectAttempts = 0;
     console.log(`[Network] Joining room: ${ROOM_ID_PREFIX + roomCode}`);
     peer = new Peer(undefined, PEER_OPTIONS);
 
@@ -183,6 +204,7 @@ export function joinRoom(roomCode, { onError, timeoutMs = CONNECT_TIMEOUT_MS } =
 
     peer.on('open', () => {
       brokerConnected = true;
+      reconnectAttempts = 0; // 接続成功でリセット
       console.log('[Network] Broker connected, attempting to connect to host:', ROOM_ID_PREFIX + roomCode);
       const conn = peer.connect(ROOM_ID_PREFIX + roomCode, { reliable: true });
       guestConnection = conn;
@@ -207,10 +229,27 @@ export function joinRoom(roomCode, { onError, timeoutMs = CONNECT_TIMEOUT_MS } =
         },
       );
     });
+    
     peer.on('disconnected', () => {
-      console.warn('[Network] Guest peer disconnected, attempting reconnect');
-      if (settled) peer?.reconnect();
+      if (!settled) return; // 初期接続中は無視
+      
+      console.warn(`[Network] Guest peer disconnected, attempt ${reconnectAttempts + 1}/${maxReconnectAttempts}`);
+      
+      if (reconnectAttempts < maxReconnectAttempts) {
+        reconnectAttempts++;
+        const delay = reconnectDelay * Math.pow(2, reconnectAttempts - 1); // 指数バックオフ
+        console.log(`[Network] Reconnecting in ${delay}ms...`);
+        setTimeout(() => {
+          if (peer && !peer.destroyed) {
+            peer.reconnect();
+          }
+        }, delay);
+      } else {
+        console.error('[Network] Max reconnection attempts reached');
+        onError?.(new Error('シグナリングサーバーとの接続が失われました。'));
+      }
     });
+    
     peer.on('error', (err) => {
       console.error('[Network] Guest peer error:', err.type, err);
       if (!settled) {
@@ -219,6 +258,7 @@ export function joinRoom(roomCode, { onError, timeoutMs = CONNECT_TIMEOUT_MS } =
         reject(err);
         return;
       }
+      // 接続確立後のエラーはonErrorコールバックへ
       onError?.(err);
     });
   });
@@ -249,4 +289,5 @@ export function disconnectAll() {
   peer?.destroy();
   peer = null;
   role = null;
+  reconnectAttempts = 0; // 再接続カウンターをリセット
 }
