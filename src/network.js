@@ -31,22 +31,40 @@ export function generateJoinCode(rng) {
 // PeerJSのデフォルト設定はSTUNのみのことがあり、対称NAT/制限の強いルーター
 // (WiFi中継機、一部の家庭用ルーター等)の組み合わせだとSTUNだけでは直接経路が
 // 見つからず接続できないことがある。中継(TURN)経路も明示的に加えて成功率を
-// 上げる(Open Relay Projectの無料TURN。認証情報は同プロジェクトが小規模利用
-// 向けに公開しているもので秘匿情報ではない)。
+// 上げる。
+// 
+// 注: Open Relay Projectの無料TURNサーバーは2022年以降不安定になったため、
+// 代わりにfreeTURN.netの無料TURNサービス(開発・テスト用、2MBit/s制限)を
+// 使用する。これもダメな場合はユーザーに代替手段を提案する。
 const ICE_SERVERS = [
+  // Google STUN servers (高速で安定)
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  // その他の公共STUNサーバー
+  { urls: 'stun:stun.1.google.com:19302' },
+  { urls: 'stun:stun.services.mozilla.com:3478' },
+  // freeTURN.netの無料TURNサーバー(開発・テスト用、2MBit/s制限)
+  { urls: 'turn:freeturn.net:3478', username: 'free', credential: 'free' },
+  { urls: 'turn:freeturn.net:3478?transport=tcp', username: 'free', credential: 'free' },
+  { urls: 'turns:freeturn.net:5349', username: 'free', credential: 'free' },
 ];
-const PEER_OPTIONS = { debug: 0, config: { iceServers: ICE_SERVERS } };
+// PeerJS Cloudは不安定だが、最も互換性が高い。再接続ロジックで対応する。
+const PEER_OPTIONS = { 
+  debug: 0, 
+  config: { iceServers: ICE_SERVERS },
+  // WebSocket接続が不安定な場合の再接続設定
+  pingInterval: 3000,  // 3秒ごとにpingを送信して接続を維持
+};
 
 let peer = null;
 let role = null; // 'host' | 'guest' | null
 let hostConnections = []; // ホスト側: 接続中の全ゲストDataConnection
 let guestConnection = null; // ゲスト側: ホストへの単一DataConnection
 let messageHandler = () => {};
+let reconnectAttempts = 0;
+let maxReconnectAttempts = 5;
+let reconnectDelay = 1000; // 初期再接続遅延1秒
 
 export function getRole() {
   return role;
@@ -71,7 +89,9 @@ function attachDataHandlers(conn, onOpen, onClose) {
 // サービスで、混雑時は接続確立に数秒〜まれに失敗することがある。ここで
 // タイムアウトを切って呼び出し元(main.js)が「新しい合言葉でもう一度」を
 // 試せるようにする。接続確立後に一時的に切れた場合は自動で1回だけ再接続を試みる。
-const CONNECT_TIMEOUT_MS = 20000;
+// TURNサーバー経由の接続は直接接続より時間がかかるため、タイムアウトを
+// 30秒に延長する。
+const CONNECT_TIMEOUT_MS = 30000;
 
 export function hostRoom(roomCode, { onGuestJoin, onGuestLeave, onError, timeoutMs = CONNECT_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
@@ -81,6 +101,8 @@ export function hostRoom(roomCode, { onGuestJoin, onGuestLeave, onError, timeout
     }
     role = 'host';
     hostConnections = [];
+    reconnectAttempts = 0;
+    console.log(`[Network] Hosting room: ${ROOM_ID_PREFIX + roomCode}`);
     peer = new Peer(ROOM_ID_PREFIX + roomCode, PEER_OPTIONS);
 
     let settled = false;
@@ -88,6 +110,7 @@ export function hostRoom(roomCode, { onGuestJoin, onGuestLeave, onError, timeout
       if (settled) return;
       settled = true;
       peer?.destroy();
+      console.error('[Network] Host room connection timeout');
       reject(new Error('通信サーバーへの接続がタイムアウトしました(この端末の通信環境をご確認ください)。もう一度お試しください。'));
     }, timeoutMs);
 
@@ -95,26 +118,54 @@ export function hostRoom(roomCode, { onGuestJoin, onGuestLeave, onError, timeout
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      reconnectAttempts = 0; // 接続成功でリセット
+      console.log(`[Network] Host room opened successfully: ${roomCode}`);
       resolve(roomCode);
     });
+    
     peer.on('disconnected', () => {
-      if (settled) peer?.reconnect();
+      if (!settled) return; // 初期接続中は無視
+      
+      console.warn(`[Network] Host peer disconnected, attempt ${reconnectAttempts + 1}/${maxReconnectAttempts}`);
+      
+      if (reconnectAttempts < maxReconnectAttempts) {
+        reconnectAttempts++;
+        const delay = reconnectDelay * Math.pow(2, reconnectAttempts - 1); // 指数バックオフ
+        console.log(`[Network] Reconnecting in ${delay}ms...`);
+        setTimeout(() => {
+          if (peer && !peer.destroyed) {
+            peer.reconnect();
+          }
+        }, delay);
+      } else {
+        console.error('[Network] Max reconnection attempts reached');
+        onError?.(new Error('シグナリングサーバーとの接続が失われました。'));
+      }
     });
+    
     peer.on('error', (err) => {
+      console.error('[Network] Host peer error:', err.type, err);
       if (!settled) {
         settled = true;
         clearTimeout(timer);
         reject(err);
         return;
       }
+      // 接続確立後のエラーはonErrorコールバックへ
       onError?.(err);
     });
+    
     peer.on('connection', (conn) => {
+      console.log('[Network] Guest connection attempt from peer:', conn.peer);
       hostConnections.push(conn);
       attachDataHandlers(
         conn,
-        () => onGuestJoin?.(conn),
         () => {
+          console.log('[Network] Guest connection established:', conn.peer);
+          onGuestJoin?.(conn);
+        },
+        () => {
+          console.log('[Network] Guest connection closed:', conn.peer);
           hostConnections = hostConnections.filter((c) => c !== conn);
           onGuestLeave?.(conn);
         },
@@ -130,6 +181,8 @@ export function joinRoom(roomCode, { onError, timeoutMs = CONNECT_TIMEOUT_MS } =
       return;
     }
     role = 'guest';
+    reconnectAttempts = 0;
+    console.log(`[Network] Joining room: ${ROOM_ID_PREFIX + roomCode}`);
     peer = new Peer(undefined, PEER_OPTIONS);
 
     let settled = false;
@@ -142,6 +195,7 @@ export function joinRoom(roomCode, { onError, timeoutMs = CONNECT_TIMEOUT_MS } =
       // 確立できなかった場合と、そもそもブローカーに届かなかった場合を区別する。
       // 前者はホスト側の回線・ルーターの制限、後者はこの端末側の通信環境が原因の
       // ことが多い。
+      console.error('[Network] Join room timeout. Broker connected:', brokerConnected);
       const message = brokerConnected
         ? 'ホストとの接続がタイムアウトしました(お互いのネットワークの制限で直接つながれない可能性があります)。'
         : '通信サーバーへの接続がタイムアウトしました(この端末の通信環境をご確認ください)。';
@@ -150,6 +204,8 @@ export function joinRoom(roomCode, { onError, timeoutMs = CONNECT_TIMEOUT_MS } =
 
     peer.on('open', () => {
       brokerConnected = true;
+      reconnectAttempts = 0; // 接続成功でリセット
+      console.log('[Network] Broker connected, attempting to connect to host:', ROOM_ID_PREFIX + roomCode);
       const conn = peer.connect(ROOM_ID_PREFIX + roomCode, { reliable: true });
       guestConnection = conn;
       attachDataHandlers(
@@ -158,9 +214,11 @@ export function joinRoom(roomCode, { onError, timeoutMs = CONNECT_TIMEOUT_MS } =
           if (settled) return;
           settled = true;
           clearTimeout(timer);
+          console.log('[Network] Successfully connected to host');
           resolve(conn);
         },
         () => {
+          console.error('[Network] Host connection failed or closed');
           if (!settled) {
             settled = true;
             clearTimeout(timer);
@@ -171,16 +229,36 @@ export function joinRoom(roomCode, { onError, timeoutMs = CONNECT_TIMEOUT_MS } =
         },
       );
     });
+    
     peer.on('disconnected', () => {
-      if (settled) peer?.reconnect();
+      if (!settled) return; // 初期接続中は無視
+      
+      console.warn(`[Network] Guest peer disconnected, attempt ${reconnectAttempts + 1}/${maxReconnectAttempts}`);
+      
+      if (reconnectAttempts < maxReconnectAttempts) {
+        reconnectAttempts++;
+        const delay = reconnectDelay * Math.pow(2, reconnectAttempts - 1); // 指数バックオフ
+        console.log(`[Network] Reconnecting in ${delay}ms...`);
+        setTimeout(() => {
+          if (peer && !peer.destroyed) {
+            peer.reconnect();
+          }
+        }, delay);
+      } else {
+        console.error('[Network] Max reconnection attempts reached');
+        onError?.(new Error('シグナリングサーバーとの接続が失われました。'));
+      }
     });
+    
     peer.on('error', (err) => {
+      console.error('[Network] Guest peer error:', err.type, err);
       if (!settled) {
         settled = true;
         clearTimeout(timer);
         reject(err);
         return;
       }
+      // 接続確立後のエラーはonErrorコールバックへ
       onError?.(err);
     });
   });
@@ -211,4 +289,5 @@ export function disconnectAll() {
   peer?.destroy();
   peer = null;
   role = null;
+  reconnectAttempts = 0; // 再接続カウンターをリセット
 }
