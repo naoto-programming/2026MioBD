@@ -1,6 +1,6 @@
 // src/render.js
 // importの ?v=... はブラウザ/GitHub Pagesのキャッシュ対策(src/main.js冒頭のコメント参照)。
-import { getCell } from './mapGenerator.js?v=20260818a';
+import { getCell } from './mapGenerator.js?v=20260818d';
 
 const BOARD_WINDOW = 10; // 各プレイヤーの前後何マスを表示するか
 const CELL_LABELS = { attack: '攻撃', defense: '守備', heal: '回復', item: '宝', damage: 'ダメージ' };
@@ -12,6 +12,15 @@ export const PLAYER_COLORS = ['#FF5B39', '#4FC3F7', '#3DDC97', '#FFC94A', '#FF4F
 // 盤面のマス1個ぶんの実寸(style.cssの.cellと同じ値を共有する)。
 // 分岐の位置合わせ計算(renderBoard内)がこの値に依存するため、CSS側の
 // --cell-width / --cell-gap を変更する場合はここも合わせて変更すること。
+// モバイル対応のために動的に値を取得する
+function getCellDimensions() {
+  if (typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches) {
+    return { width: 80, gap: 8, stride: 88 };
+  }
+  return { width: 132, gap: 16, stride: 148 };
+}
+
+// 互換性のために定数も残すが、実際の使用ではgetCellDimensions()を優先
 const CELL_WIDTH = 132;
 const CELL_GAP = 16;
 const CELL_STRIDE = CELL_WIDTH + CELL_GAP;
@@ -148,6 +157,7 @@ function renderBoard(state) {
   trunkRow.className = 'board-row board-row-trunk';
 
   const { start, end } = computeBoardWindowRange(state);
+  const dims = getCellDimensions();
 
   for (let i = start; i < end; i++) {
     const cell = state.map.trunk[i];
@@ -189,8 +199,8 @@ function renderBoard(state) {
 
       const branchPanel = document.createElement('div');
       branchPanel.className = 'branch-panel';
-      branchPanel.style.marginLeft = `${Math.max(0, (startCol - start) * CELL_STRIDE)}px`;
-      branchPanel.style.width = `${Math.max(CELL_WIDTH, (span + 1) * CELL_STRIDE - CELL_GAP)}px`;
+      branchPanel.style.marginLeft = `${Math.max(0, (startCol - start) * dims.stride)}px`;
+      branchPanel.style.width = `${Math.max(dims.width, (span + 1) * dims.stride - dims.gap)}px`;
 
       const branchHeader = document.createElement('div');
       branchHeader.className = 'branch-header';
@@ -202,7 +212,7 @@ function renderBoard(state) {
         const isRejoinCell = i === branch.cells.length - 1;
         const xOffset = branch.cells.length === 1 ? 0 : (i / (branch.cells.length - 1)) * span;
         const cellEl = buildCellElement(state, branch.id, i, cell, ' branch-cell' + (isRejoinCell ? ' rejoin-cell' : ''));
-        cellEl.style.left = `${xOffset * CELL_STRIDE}px`;
+        cellEl.style.left = `${xOffset * dims.stride}px`;
 
         if (isRejoinCell) {
           const rejoinBadge = document.createElement('span');
