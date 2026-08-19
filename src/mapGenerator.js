@@ -1,8 +1,13 @@
 export const CELL_TYPES = ['attack', 'defense', 'heal', 'item', 'damage'];
 
+// 幹(メイン経路)のマス種の出現比率。回復は多すぎたので減らし、防御も少し減らし、
+// その分攻撃を少し増やしてある(item/damageも軽く調整)。合計は1.0。
+// キー順はCELL_TYPESと揃えてある(weightedCellTypeは最初/最後のキーが選ばれる
+// 境界条件をテストで直接検証しているため)。
+const TRUNK_WEIGHTS = { attack: 0.25, defense: 0.17, heal: 0.13, item: 0.22, damage: 0.23 };
+
 export function randomCellType(rng = Math.random) {
-  const index = Math.min(CELL_TYPES.length - 1, Math.floor(rng() * CELL_TYPES.length));
-  return CELL_TYPES[index];
+  return weightedCellType(TRUNK_WEIGHTS, rng);
 }
 
 export function createCell(type) {

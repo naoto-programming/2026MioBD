@@ -190,11 +190,12 @@ test('resolveEffects applies attack damage to the boss using character power', (
 });
 
 test('resolveEffects protects players on a defense cell and their co-located allies from boss damage', () => {
-  // rng=0.2 -> boss die face 2 (火球, damage 12), a real non-zero hit so this
-  // test actually exercises whether damage was blocked, not just coincidence
-  // (an earlier version of this test used a boss roll that always missed,
-  // so it passed regardless of whether blocking worked at all). A full roll
-  // of 6 (reduction 90) comfortably exceeds the hit, fully blocking it.
+  // rng=0.2 -> boss die face 2 (火球, fireDragon damage 31), a real non-zero
+  // hit so this test actually exercises whether damage was blocked, not just
+  // coincidence (an earlier version of this test used a boss roll that
+  // always missed, so it passed regardless of whether blocking worked at
+  // all). A full roll of 6 (reduction 90) comfortably exceeds the hit,
+  // fully blocking it.
   const map = { trunk: [{ type: 'defense' }], branches: [] };
   const state = baseState({
     map,
@@ -205,27 +206,8 @@ test('resolveEffects protects players on a defense cell and their co-located all
   });
   const result = resolveEffects(state, {}, {}, () => 0.2, { defender: 6 });
   const expectedReduction = 6 * 15; // defender's explicit roll of 6, DEFENSE_PER_DIE=15
-  assert.equal(result.players.find((p) => p.id === 'defender').hp, 300 - Math.max(0, 12 - expectedReduction));
-  assert.equal(result.players.find((p) => p.id === 'ally').hp, 300 - Math.max(0, 12 - expectedReduction), 'co-located ally should get the same reduction as the defender, without rolling themselves');
-});
-
-test('resolveEffects extends defense to a co-located ally whose own turn is suppressed while resting', () => {
-  // The scenario the co-location rule actually matters for: a revived player
-  // (resting, so their own cell effect is suppressed this turn) standing
-  // next to an active defender should still be shielded, the same way heal
-  // already works for a resting ally at a heal cell.
-  const map = { trunk: [{ type: 'defense' }], branches: [] };
-  const state = baseState({
-    map,
-    players: [
-      { id: 'defender', hp: 300, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 } },
-      { id: 'skipper', hp: 300, maxHp: 300, characterId: 'mage', position: { track: 'trunk', index: 0 }, restTurns: 2 },
-    ],
-  });
-  const result = resolveEffects(state, {}, {}, () => 0.2, { defender: 6 }); // boss face 2, damage 12
-  const expectedReduction = 6 * 15;
-  const skipper = result.players.find((p) => p.id === 'skipper');
-  assert.equal(skipper.hp, 300 - Math.max(0, 12 - expectedReduction), 'skipping player should still be protected by the co-located active defender');
+  assert.equal(result.players.find((p) => p.id === 'defender').hp, 300 - Math.max(0, 31 - expectedReduction));
+  assert.equal(result.players.find((p) => p.id === 'ally').hp, 300 - Math.max(0, 31 - expectedReduction), 'co-located ally should get the same reduction as the defender, without rolling themselves');
 });
 
 test('resolveEffects damage cell: die value 1-2 deals zero damage, otherwise damage equals die value x DAMAGE_PER_DIE', () => {
@@ -255,19 +237,23 @@ test('resolveEffects damage cell: die value 1-2 deals zero damage, otherwise dam
   assert.equal(highRoll.players.find((p) => p.id === 'p1').hp, 300 - 5 * 10);
 });
 
-test('resolveEffects revives a player who reaches 0 hp at half max hp and sets a 3-turn rest', () => {
+test('resolveEffects marks a player dead (hp 0, no immediate revival) when they reach 0 hp', () => {
   // cell type 'item' is intentionally not handled by resolveEffects (no-op),
-  // so only the boss attack phase affects this player's hp.
+  // so only the boss attack phase affects this player's hp. Dying no longer
+  // revives immediately -- the player stays at 0 hp and dead:true until a
+  // later turn's revival roll (see the "revival roll" tests below) brings
+  // them back.
   const map = { trunk: [{ type: 'item' }], branches: [] };
   const state = baseState({
     map,
     boss: { id: 'fireDragon', name: '炎竜', hp: 300, maxHp: 300 },
-    players: [{ id: 'p1', hp: 1, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 } }],
+    players: [{ id: 'p1', hp: 1, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, dead: false, deathAttempt: 0 }],
   });
-  const result = resolveEffects(state, {}, {}, () => 0.999); // boss die face 6 (大火炎, damage 70), exceeds hp 1
+  const result = resolveEffects(state, {}, {}, () => 0.999); // boss die face 6 (大火炎), well above hp 1
   const p1 = result.players.find((p) => p.id === 'p1');
-  assert.equal(p1.hp, 15); // maxHp/2
-  assert.equal(p1.restTurns, 3, 'DEATH_REST_TURNS');
+  assert.equal(p1.hp, 0);
+  assert.equal(p1.dead, true);
+  assert.equal(p1.deathAttempt, 0);
   assert.ok(result.log.some((entry) => entry.type === 'death' && entry.target === 'p1'), 'a death message should be logged');
 });
 
@@ -297,104 +283,141 @@ test('resolveEffects treats a boss roll of 1 as a failed attack with no damage',
   assert.equal(result.players[0].hp, 30);
 });
 
-test('resolveEffects suppresses heal for a resting player (restTurns=1) and clears it to 0 afterward', () => {
+test('resolveEffects suppresses the normal cell effect for a dead player (revival roll runs instead)', () => {
   const map = { trunk: [{ type: 'heal' }, {}, {}], branches: [] };
   const state = baseState({
     map,
     boss: { id: 'fireDragon', name: '炎竜', hp: 0, maxHp: 300 }, // isolate from boss-attack phase
     players: [
-      { id: 'healer', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, restTurns: 1 },
-      { id: 'ally', hp: 5, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 1 }, restTurns: 0 },
+      { id: 'healer', hp: 0, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, dead: true, deathAttempt: 0 },
+      { id: 'ally', hp: 5, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 1 }, dead: false, deathAttempt: 0 },
     ],
   });
-  const result = resolveEffects(state, {}, {}, () => 0.5);
-  assert.equal(result.players.find((p) => p.id === 'ally').hp, 5, 'heal should be suppressed, ally hp unchanged');
-  assert.equal(result.players.find((p) => p.id === 'healer').restTurns, 0, 'rest count should reach 0 after being consumed');
+  // healer's roll (6) is a revival-roll outcome, not a heal die -- if the
+  // heal cell effect ran instead, ally's hp would change. rng=>0 forces the
+  // boss's own die to face 1 (miss, 0 damage) so a struggle-free revival
+  // roll can't incidentally arm the boss-attack phase and confound ally's
+  // hp via an unrelated path.
+  const result = resolveEffects(state, { healer: 6 }, {}, () => 0);
+  assert.equal(result.players.find((p) => p.id === 'ally').hp, 5, 'a dead player never runs their own cell effect, so the ally is not healed');
 });
 
-test('resolveEffects suppresses attack for a resting player (restTurns=1) and clears it to 0 afterward', () => {
-  const map = { trunk: [{ type: 'attack' }], branches: [] };
-  const state = baseState({
-    map,
-    boss: { id: 'fireDragon', name: '炎竜', hp: 300, maxHp: 300 },
-    // hp well above any single boss hit so the boss-attack phase (which still
-    // fires this turn) doesn't incidentally kill/revive this player and
-    // confound the restTurns assertion below.
-    players: [{ id: 'p1', hp: 300, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 }, restTurns: 1 }],
-  });
-  const result = resolveEffects(state, { p1: 6 }, {}, () => 0.5);
-  assert.equal(result.boss.hp, 300, 'attack should be suppressed, boss takes no damage');
-  assert.equal(result.players.find((p) => p.id === 'p1').restTurns, 0, 'rest count should reach 0 after being consumed');
-});
-
-test('resolveEffects suppresses defense for a resting player (restTurns=1): they still take boss damage, and rest clears to 0 afterward', () => {
-  const map = { trunk: [{ type: 'defense' }], branches: [] };
-  const state = baseState({
-    map,
-    players: [{ id: 'p1', hp: 300, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 }, restTurns: 1 }],
-  });
-  const result = resolveEffects(state, {}, {}, () => 0.2); // boss die face 2 -> 火球, damage 12
-  const p1 = result.players.find((p) => p.id === 'p1');
-  assert.equal(p1.hp, 288, 'defense should be suppressed, so boss damage (12) still lands');
-  assert.equal(p1.restTurns, 0, 'rest count should reach 0 after being consumed');
-});
-
-test('resolveEffects suppresses damage-cell effect for a resting player (restTurns=1) and clears it to 0 afterward', () => {
-  const map = { trunk: [{ type: 'damage' }], branches: [] };
-  const state = baseState({
-    map,
-    boss: { id: 'fireDragon', name: '炎竜', hp: 0, maxHp: 300 }, // isolate from boss-attack phase
-    players: [{ id: 'p1', hp: 30, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, restTurns: 1 }],
-  });
-  const result = resolveEffects(state, {}, { p1: 6 }, () => 0.5); // die 6 would normally deal 60 damage (6 x DAMAGE_PER_DIE)
-  const p1 = result.players.find((p) => p.id === 'p1');
-  assert.equal(p1.hp, 30, 'damage-cell effect should be suppressed, hp unchanged');
-  assert.equal(p1.restTurns, 0, 'rest count should reach 0 after being consumed');
-});
-
-test('resolveEffects decrements restTurns by 1 per turn without fully clearing it before the rest period ends', () => {
-  // The specific behavior requested: dying costs 3 turns of rest, not 1 --
-  // one turn of suppression should only tick restTurns down by 1, not to 0.
-  const map = { trunk: [{ type: 'attack' }], branches: [] };
+test('revival roll: 5 or 6 revives the player immediately at half max hp, no cost', () => {
+  const map = { trunk: [{ type: 'item' }], branches: [] };
   const state = baseState({
     map,
     boss: { id: 'fireDragon', name: '炎竜', hp: 0, maxHp: 300 },
-    players: [{ id: 'p1', hp: 300, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 }, restTurns: 3 }],
+    players: [{ id: 'p1', hp: 0, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 }, dead: true, deathAttempt: 2 }],
   });
   const result = resolveEffects(state, { p1: 6 }, {}, () => 0.5);
   const p1 = result.players.find((p) => p.id === 'p1');
-  assert.equal(p1.restTurns, 2, 'one turn of rest consumed, two remain');
-  assert.equal(result.boss.hp, 0, 'attack should still be suppressed while resting');
+  assert.equal(p1.hp, 150, 'half of maxHp 300');
+  assert.equal(p1.dead, false);
+  assert.equal(p1.deathAttempt, 0, 'attempt counter resets on revival');
+  const entry = result.log.find((e) => e.type === 'deathRoll' && e.target === 'p1');
+  assert.equal(entry.outcome, 'reviveFree');
 });
 
-test('resolveEffects does not affect a player with restTurns=0 (existing behavior)', () => {
-  const map = { trunk: [{ type: 'attack' }], branches: [] };
+test('revival roll: 1 revives the player at playerCount x 10 hp, draining 10 hp from each other living player (floored at 1)', () => {
+  const map = { trunk: [{ type: 'item' }], branches: [] };
   const state = baseState({
     map,
-    // hp well above any single boss hit so this turn's boss-attack phase
-    // can't incidentally kill/revive this player.
-    players: [{ id: 'p1', hp: 300, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 }, restTurns: 0 }],
+    boss: { id: 'fireDragon', name: '炎竜', hp: 0, maxHp: 300 },
+    players: [
+      { id: 'p1', hp: 0, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 }, dead: true, deathAttempt: 0 },
+      { id: 'p2', hp: 20, maxHp: 300, characterId: 'mage', position: { track: 'trunk', index: 0 }, dead: false, deathAttempt: 0 },
+      { id: 'p3', hp: 5, maxHp: 300, characterId: 'archer', position: { track: 'trunk', index: 0 }, dead: false, deathAttempt: 0 },
+    ],
   });
-  const result = resolveEffects(state, { p1: 6 }, {}, () => 0.5);
-  const expectedDamage = Math.round(CHARACTERS.warrior.diceTable[6].power * 1.5); // critical special
-  assert.equal(result.boss.hp, 300 - expectedDamage, 'attack should apply normally when not resting');
-  assert.equal(result.players.find((p) => p.id === 'p1').restTurns, 0);
+  const result = resolveEffects(state, { p1: 1 }, {}, () => 0.5);
+  const p1 = result.players.find((p) => p.id === 'p1');
+  assert.equal(p1.hp, 30, '3 players x 10 hp per player');
+  assert.equal(p1.dead, false);
+  assert.equal(result.players.find((p) => p.id === 'p2').hp, 10, '20 - 10');
+  assert.equal(result.players.find((p) => p.id === 'p3').hp, 1, '5 - 10 floored at 1, not 0 or negative');
 });
 
-test('resolveEffects freshly resets restTurns for a player who dies again in the same turn their old rest was about to be consumed', () => {
-  // Edge case: a player consuming the last turn of an old rest period who
-  // also dies (again) this same turn must end up with restTurns freshly
-  // reset to 3 for their next turns, not decremented by the "consumed" path.
-  const map = { trunk: [{ type: 'item' }], branches: [] }; // no cell effect either way
+test('revival roll: 1 only drains hp from other living players, not a third player who is also currently dead', () => {
+  const map = { trunk: [{ type: 'item' }], branches: [] };
+  const state = baseState({
+    map,
+    boss: { id: 'fireDragon', name: '炎竜', hp: 0, maxHp: 300 },
+    players: [
+      { id: 'p1', hp: 0, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 }, dead: true, deathAttempt: 0 },
+      { id: 'p2', hp: 0, maxHp: 300, characterId: 'mage', position: { track: 'trunk', index: 0 }, dead: true, deathAttempt: 1 },
+    ],
+  });
+  // p2 also rolls this turn (both were dead at the start of the turn), so
+  // give it an explicit struggle roll (2) -- otherwise it would fall back to
+  // the default die value (1) like every other cell-effect roll in this
+  // file, reviving itself too and confounding the assertion below.
+  const result = resolveEffects(state, { p1: 1, p2: 2 }, {}, () => 0.5);
+  assert.equal(result.players.find((p) => p.id === 'p2').hp, 0, 'an already-dead player has no hp to drain and stays untouched');
+});
+
+test('revival roll: 2, 3, or 4 keeps the player dead, heals the boss by 20, and increments the attempt counter', () => {
+  const map = { trunk: [{ type: 'item' }], branches: [] };
+  for (const face of [2, 3, 4]) {
+    const state = baseState({
+      map,
+      boss: { id: 'fireDragon', name: '炎竜', hp: 100, maxHp: 300 },
+      players: [{ id: 'p1', hp: 0, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 }, dead: true, deathAttempt: 0 }],
+    });
+    const result = resolveEffects(state, { p1: face }, {}, () => 0.5);
+    const p1 = result.players.find((p) => p.id === 'p1');
+    assert.equal(p1.dead, true, `face ${face} should not revive the player`);
+    assert.equal(p1.hp, 0);
+    assert.equal(p1.deathAttempt, 1);
+    assert.equal(result.boss.hp, 120, `face ${face} should heal the boss by 20`);
+  }
+});
+
+test('revival roll: the 3rd consecutive struggle (2/3/4) guarantees revival at 1/4 max hp, no cost', () => {
+  const map = { trunk: [{ type: 'item' }], branches: [] };
+  const state = baseState({
+    map,
+    boss: { id: 'fireDragon', name: '炎竜', hp: 100, maxHp: 300 },
+    players: [{ id: 'p1', hp: 0, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 }, dead: true, deathAttempt: 2 }],
+  });
+  // rng=>0 forces the boss's own die to face 1 (miss, 0 damage): the boss
+  // heals from this struggle and so is armed to attack this same turn, and
+  // the freshly (guaranteed-)revived p1 is vulnerable to it (see the
+  // "freshly revived" test below) -- an incidental non-miss hit here would
+  // reduce p1's hp and confound this assertion, which is only about the
+  // revival hp calculation itself.
+  const result = resolveEffects(state, { p1: 3 }, {}, () => 0);
+  const p1 = result.players.find((p) => p.id === 'p1');
+  assert.equal(p1.dead, false, 'the 3rd attempt guarantees revival even on a struggle face');
+  assert.equal(p1.hp, 75, '1/4 of maxHp 300');
+  assert.equal(p1.deathAttempt, 0);
+  assert.equal(result.boss.hp, 120, 'the boss still heals for this 3rd struggle before the guaranteed revival kicks in');
+  const entry = result.log.find((e) => e.type === 'deathRoll' && e.target === 'p1');
+  assert.equal(entry.outcome, 'reviveGuaranteed');
+});
+
+test('a dead player is exempt from the boss attack phase', () => {
+  const map = { trunk: [{ type: 'item' }], branches: [] };
   const state = baseState({
     map,
     boss: { id: 'fireDragon', name: '炎竜', hp: 300, maxHp: 300 },
-    players: [{ id: 'p1', hp: 1, maxHp: 30, characterId: 'warrior', position: { track: 'trunk', index: 0 }, restTurns: 1 }],
+    players: [{ id: 'p1', hp: 0, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 }, dead: true, deathAttempt: 1 }],
   });
-  const result = resolveEffects(state, {}, {}, () => 0.999); // boss die face 6 (大火炎, damage 70), exceeds hp 1 -> dies again
+  // face 2 -> a struggle outcome, so p1 stays dead through this whole turn
+  const result = resolveEffects(state, { p1: 2 }, {}, () => 0.2);
+  assert.ok(!result.log.some((entry) => entry.type === 'bossAttack' && entry.target === 'p1'), 'a dead player should not appear in the boss-attack log at all');
+});
+
+test('a freshly revived player (this same turn) is vulnerable to this turn\'s boss attack', () => {
+  const map = { trunk: [{ type: 'item' }], branches: [] };
+  const state = baseState({
+    map,
+    boss: { id: 'fireDragon', name: '炎竜', hp: 300, maxHp: 300 },
+    players: [{ id: 'p1', hp: 0, maxHp: 300, characterId: 'warrior', position: { track: 'trunk', index: 0 }, dead: true, deathAttempt: 0 }],
+  });
+  const result = resolveEffects(state, { p1: 6 }, {}, () => 0.2); // revives free (150 hp), then boss face 2 (fireDragon: 31 damage) should land
   const p1 = result.players.find((p) => p.id === 'p1');
-  assert.equal(p1.hp, 15); // maxHp/2
-  assert.equal(p1.restTurns, 3, 'should be freshly reset for the new death, not decremented from the old rest');
+  assert.equal(p1.hp, 150 - 31);
+  assert.ok(result.log.some((entry) => entry.type === 'bossAttack' && entry.target === 'p1'), 'freshly revived players are back in the fight the same turn');
 });
 
 test('rollItemBuff maps every die face to a positive bonus and duration', () => {

@@ -1,7 +1,7 @@
 // importの ?v=... はブラウザ/GitHub Pagesのキャッシュ対策(src/main.js冒頭のコメント参照)。
-import { createInitialMap, ensureMapAhead, trimOldTrunkCells, branchesAt, getCell } from './mapGenerator.js?v=20260818g';
+import { createInitialMap, ensureMapAhead, trimOldTrunkCells, branchesAt, getCell } from './mapGenerator.js?v=20260819a';
 import { CHARACTERS, rollCharacterAttack } from './characters.js?v=20260818g';
-import { BOSSES, calculateTargetedBalance, calculateTurnLimit, rollBossAttack } from './boss.js?v=20260818g';
+import { BOSSES, calculateTargetedBalance, calculateTurnLimit, rollBossAttack } from './boss.js?v=20260819a';
 
 export function rollDie(rng = Math.random) {
   return Math.min(6, Math.floor(rng() * 6) + 1);
@@ -38,7 +38,8 @@ export function createGameState(playerSelections, bossId, rng = Math.random, tur
       maxHp,
       attackScale: targetBalance ? targetBalance.attackScale : 1,
       position: { track: 'trunk', index: 0 },
-      restTurns: 0,
+      dead: false,
+      deathAttempt: 0,
       buffs: [],
     };
   });
@@ -109,19 +110,30 @@ export function resolveMovement(state, moves, chooseBranchFns, rng = Math.random
 const HEAL_RADIUS = 3;
 // 回復は出目に比例する(固定値ではない)。1目=12〜6目=72。
 const HEAL_PER_DIE = 12;
-// 防御(軽減量)も出目に比例する。1目=15〜6目=90。ボスの1撃(30〜150)に対して
-// 意味のある軽減になるようheal同様の倍率制に揃えてある。
+// 防御(軽減量)も出目に比例する。1目=15〜6目=90。6目の最大軽減量(90)は
+// 標準ボスfireDragonの最大威力(6目=90、boss.js参照)とちょうど釣り合うように
+// 調整してある。
 const DEFENSE_PER_DIE = 15;
 // ダメージマスも同様に倍率制(1〜2目は0、3〜6目=30/40/50/60)。旧版は
 // 3〜6ダメージ固定だったが、HP平均250に対しては誤差レベルで意味を失っていたため
 // heal/defenseと同じ桁数になるよう引き上げた。
 const DAMAGE_PER_DIE = 10;
-// 死亡ペナルティ: 復活後に休み状態になるターン数(自分のマス効果が無効になる)。
-const DEATH_REST_TURNS = 3;
-// 死亡が発生するとボスのHPを少し回復させる(パーティが誰かを死なせることに
-// リスクを持たせるため)。maxHpに対する割合で定義し、複数人が同時に死亡した
-// 場合は死亡人数ぶん重ねて回復する。
-const DEATH_BOSS_HEAL_RATIO = 0.02;
+// 死亡中プレイヤーは毎ターン、自分のマス効果の代わりに「復活ロール」を振る。
+// 5・6: 代償なしで最大HPの半分まで回復して即時復活。
+// 1: 生存中の他プレイヤー全員からHPを10ずつ徴収する代償で、人数xDEATH_COSTLY_REVIVE_HP_PER_PLAYER
+//    のHPで即時復活。
+// 2・3・4: 復活できず、ボスのHPがDEATH_STRUGGLE_BOSS_HEALだけ回復する。これが
+//    DEATH_MAX_ATTEMPTS回目(3回目)の挑戦だった場合は、それでも代償なしで
+//    最大HPの1/4まで回復して即時復活する(無限に足止めされないための保証)。
+const DEATH_MAX_ATTEMPTS = 3;
+const DEATH_FREE_REVIVE_HP_RATIO = 0.5;
+const DEATH_GUARANTEED_REVIVE_HP_RATIO = 0.25;
+const DEATH_COSTLY_REVIVE_HP_PER_PLAYER = 10;
+// 代償で徴収する側は0まで削らない(このメカニクス単体の巻き添えで別の死亡が
+// 連鎖するのを避けるための下限)。
+const DEATH_COSTLY_DRAIN_PER_OTHER = 10;
+const DEATH_COSTLY_DRAIN_FLOOR = 1;
+const DEATH_STRUGGLE_BOSS_HEAL = 20;
 
 function trackDistance(posA, posB) {
   if (posA.track !== posB.track) return Infinity;
@@ -182,17 +194,18 @@ export function resolveEffects(state, attackRolls = {}, damageRolls = {}, rngOrD
   let boss = { ...state.boss, lastRoll: state.boss?.lastRoll ?? null };
   const log = [];
 
-  // 休み状態(前ターン以前の死亡ペナルティ)が残っているプレイヤー。
+  // 死亡中(前ターン以前に力尽きて、まだ復活していない)プレイヤー。
   // このターンの開始時点での状態を記録しておく(効果解決中に上書きされる前に)。
-  const skippingIds = new Set(players.filter((p) => p.restTurns > 0).map((p) => p.id));
+  const deadIds = new Set(players.filter((p) => p.dead).map((p) => p.id));
 
-  // 1. マス効果はプレイヤー順に順番に処理する。
+  // 1. マス効果はプレイヤー順に順番に処理する(死亡中のプレイヤーは対象外、
+  //    代わりに後段の復活ロールで処理される)。
   //    これにより、回復・攻撃・防御・ダメージの演出が一斉ではなく、個別の視点で見える。
   const defendedPlayerIds = new Set();
   const defenseAmounts = new Map();
   const buffedThisTurn = new Set();
   for (const player of players) {
-    if (skippingIds.has(player.id)) continue;
+    if (deadIds.has(player.id)) continue;
     const cell = getCell(state.map, player.position.track, player.position.index);
 
     if (cell.type === 'heal') {
@@ -261,12 +274,53 @@ export function resolveEffects(state, attackRolls = {}, damageRolls = {}, rngOrD
     }
   }
 
-  // 2. ボス攻撃は最後にまとめて処理する。
+  // 2. 死亡中のプレイヤーは、通常のマス効果の代わりに復活ロールを処理する
+  //    (このターン開始時点で死亡していた者のみ。今ターン新たに死亡した者は
+  //    次のターンから対象になる)。
+  for (const player of players) {
+    if (!deadIds.has(player.id)) continue;
+    const dieValue = attackRolls[player.id] ?? 1;
+
+    if (dieValue === 5 || dieValue === 6) {
+      const reviveHp = Math.floor(player.maxHp * DEATH_FREE_REVIVE_HP_RATIO);
+      player.hp = reviveHp;
+      player.dead = false;
+      player.deathAttempt = 0;
+      log.push({ type: 'deathRoll', target: player.id, value: dieValue, outcome: 'reviveFree', hp: reviveHp });
+    } else if (dieValue === 1) {
+      const reviveHp = players.length * DEATH_COSTLY_REVIVE_HP_PER_PLAYER;
+      const donors = players.filter((other) => other.id !== player.id && !other.dead);
+      for (const donor of donors) {
+        donor.hp = Math.max(DEATH_COSTLY_DRAIN_FLOOR, donor.hp - DEATH_COSTLY_DRAIN_PER_OTHER);
+      }
+      player.hp = reviveHp;
+      player.dead = false;
+      player.deathAttempt = 0;
+      log.push({ type: 'deathRoll', target: player.id, value: dieValue, outcome: 'reviveCostly', hp: reviveHp, donorIds: donors.map((d) => d.id) });
+    } else {
+      // 2, 3, 4
+      boss.hp = Math.min(boss.maxHp, boss.hp + DEATH_STRUGGLE_BOSS_HEAL);
+      const attempt = player.deathAttempt + 1;
+      if (attempt >= DEATH_MAX_ATTEMPTS) {
+        const reviveHp = Math.floor(player.maxHp * DEATH_GUARANTEED_REVIVE_HP_RATIO);
+        player.hp = reviveHp;
+        player.dead = false;
+        player.deathAttempt = 0;
+        log.push({ type: 'deathRoll', target: player.id, value: dieValue, outcome: 'reviveGuaranteed', hp: reviveHp, bossHeal: DEATH_STRUGGLE_BOSS_HEAL });
+      } else {
+        player.deathAttempt = attempt;
+        log.push({ type: 'deathRoll', target: player.id, value: dieValue, outcome: 'struggle', attempt, bossHeal: DEATH_STRUGGLE_BOSS_HEAL });
+      }
+    }
+  }
+
+  // 3. ボス攻撃は最後にまとめて処理する(死亡中のプレイヤーは対象外)。
   if (boss.hp > 0) {
     const bossDie = rollDie(rng);
     boss.lastRoll = bossDie;
     const bossAttack = rollBossAttack(boss.id, bossDie);
     for (const player of players) {
+      if (player.dead) continue;
       const reduction = defendedPlayerIds.has(player.id) ? defenseAmounts.get(player.id) ?? 0 : 0;
       const netDamage = Math.max(0, bossAttack.damage - reduction);
       if (!defendedPlayerIds.has(player.id) || netDamage > 0) {
@@ -276,19 +330,12 @@ export function resolveEffects(state, attackRolls = {}, damageRolls = {}, rngOrD
     }
   }
 
-  // 死亡プレイヤーの即時復活(ペナルティ: HP半分・DEATH_REST_TURNSターン休み)。
-  // 死亡するとボスのHPも少し回復する(複数人同時死亡なら人数ぶん重ねて回復)。
-  // 今ターン消費した休みカウントはここで1減らすが、同ターン中に再度死亡・復活した
-  // プレイヤーは新しいペナルティとしてDEATH_REST_TURNSが再設定される(減算と衝突しない)。
+  // 4. このターン新たに力尽きたプレイヤーを死亡状態にする(復活ロールは次の
+  //    ターンから)。
   players = players.map((p) => {
-    if (p.hp <= 0) {
-      const bossHeal = Math.round(boss.maxHp * DEATH_BOSS_HEAL_RATIO);
-      boss.hp = Math.min(boss.maxHp, boss.hp + bossHeal);
-      log.push({ type: 'death', target: p.id, restTurns: DEATH_REST_TURNS, bossHeal });
-      return { ...p, hp: Math.floor(p.maxHp / 2), restTurns: DEATH_REST_TURNS };
-    }
-    if (skippingIds.has(p.id)) {
-      return { ...p, restTurns: Math.max(0, p.restTurns - 1) };
+    if (!p.dead && p.hp <= 0) {
+      log.push({ type: 'death', target: p.id });
+      return { ...p, hp: 0, dead: true, deathAttempt: 0 };
     }
     return p;
   });

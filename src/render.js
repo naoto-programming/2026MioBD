@@ -1,6 +1,6 @@
 // src/render.js
 // importの ?v=... はブラウザ/GitHub Pagesのキャッシュ対策(src/main.js冒頭のコメント参照)。
-import { getCell } from './mapGenerator.js?v=20260818g';
+import { getCell } from './mapGenerator.js?v=20260819a';
 
 const BOARD_WINDOW = 10; // 各プレイヤーの前後何マスを表示するか
 const CELL_LABELS = { attack: '攻撃', defense: '守備', heal: '回復', item: '宝', damage: 'ダメージ' };

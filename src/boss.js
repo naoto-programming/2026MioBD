@@ -1,18 +1,22 @@
 // 早めの短時間プレイを許容するため、目標時間と人数でボスの難易度を切り替える。
 // 5分程度の軽いゲームでは軽いボスを選び、最低HPも下げる。長時間プレイでは
 // より重いボスを選び、HP/攻撃も上げる。
+// ボスの最大威力(6目)は、防御マスの最大軽減量(DEFENSE_PER_DIE(engine.js) x 6
+// = 90)に合わせてある。全体攻撃力も底上げ済み(旧テーブルの約2.57倍。この
+// 倍率は標準ボスfireDragonの旧最大値35を90に引き上げる係数90/35から算出し、
+// 他の2体にも同じ係数を掛けて相対的な強さの並びを保っている)。
 export const BOSSES = {
   emberWisp: {
     id: 'emberWisp',
     name: '火の小鬼',
     maxHp: 520,
     diceTable: {
-      1: { name: '小突き', damage: 6 },
-      2: { name: '火の粉', damage: 8 },
-      3: { name: '火の粉', damage: 8 },
-      4: { name: '焦り', damage: 7 },
-      5: { name: '全体の火花', damage: 12 },
-      6: { name: '爆発の火炎', damage: 18 },
+      1: { name: '小突き', damage: 15 },
+      2: { name: '火の粉', damage: 21 },
+      3: { name: '火の粉', damage: 21 },
+      4: { name: '焦り', damage: 18 },
+      5: { name: '全体の火花', damage: 31 },
+      6: { name: '爆発の火炎', damage: 46 },
     },
   },
   fireDragon: {
@@ -20,12 +24,12 @@ export const BOSSES = {
     name: '炎竜',
     maxHp: 1200,
     diceTable: {
-      1: { name: '爪撃', damage: 10 }, // rollBossAttackが1目を強制的に失敗(0)にするため実際には使われない
-      2: { name: '火球', damage: 12 },
-      3: { name: '火球', damage: 12 },
-      4: { name: '咆哮', damage: 8 },
-      5: { name: '全体火炎', damage: 20 },
-      6: { name: '大火炎', damage: 35 },
+      1: { name: '爪撃', damage: 26 }, // rollBossAttackが1目を強制的に失敗(0)にするため実際には使われない
+      2: { name: '火球', damage: 31 },
+      3: { name: '火球', damage: 31 },
+      4: { name: '咆哮', damage: 21 },
+      5: { name: '全体火炎', damage: 51 },
+      6: { name: '大火炎', damage: 90 }, // 防御マス最大軽減量(90)と一致させてある
     },
   },
   magmaTitan: {
@@ -33,12 +37,12 @@ export const BOSSES = {
     name: '熔岩王',
     maxHp: 1750,
     diceTable: {
-      1: { name: '地割れ', damage: 12 },
-      2: { name: '溶岩弾', damage: 16 },
-      3: { name: '溶岩弾', damage: 16 },
-      4: { name: '戦慄の咆哮', damage: 12 },
-      5: { name: '全体溶岩', damage: 24 },
-      6: { name: '天上火砕', damage: 42 },
+      1: { name: '地割れ', damage: 31 },
+      2: { name: '溶岩弾', damage: 41 },
+      3: { name: '溶岩弾', damage: 41 },
+      4: { name: '戦慄の咆哮', damage: 31 },
+      5: { name: '全体溶岩', damage: 62 },
+      6: { name: '天上火砕', damage: 108 },
     },
   },
 };

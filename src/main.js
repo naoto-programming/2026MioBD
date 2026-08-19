@@ -5,10 +5,10 @@
 // 上げ忘れると、ユーザーのブラウザがそのファイルだけ古いキャッシュのまま
 // 動き続けてしまう(修正したのに直っていないように見える不具合の原因になる)。
 import { CHARACTERS, rollCharacterAttack } from './characters.js?v=20260818g';
-import { createGameState, moveOnePlayer, playTurn, rollDie, sortPlayersByProgress, rollItemBuff } from './engine.js?v=20260818g';
-import { rollBossAttack, calculateTurnLimit, calculateTargetedBalance, BOSSES } from './boss.js?v=20260818g';
-import { branchesAt, ensureMapAhead, getCell } from './mapGenerator.js?v=20260818g';
-import { renderGame } from './render.js?v=20260818g';
+import { createGameState, moveOnePlayer, playTurn, rollDie, sortPlayersByProgress, rollItemBuff } from './engine.js?v=20260819a';
+import { rollBossAttack, calculateTurnLimit, calculateTargetedBalance, BOSSES } from './boss.js?v=20260819a';
+import { branchesAt, ensureMapAhead, getCell } from './mapGenerator.js?v=20260819a';
+import { renderGame } from './render.js?v=20260819a';
 import { startBgm, playSfx, toggleMuted, isMuted } from './audio.js?v=20260818g';
 import * as net from './network.js?v=20260818g';
 import { generateJoinCode } from './network.js?v=20260818g';
@@ -42,6 +42,17 @@ const SECONDS_PER_TURN_ESTIMATE = 20;
 
 function estimateMinutes(turns) {
   return Math.max(1, Math.round((turns * SECONDS_PER_TURN_ESTIMATE) / 60));
+}
+
+// サイコロ枠の現在の表示テキストを確定値として読み取る。フリック演出の最初の
+// 更新(100ms後)より前にクリックされると、まだ初期のプレースホルダー('·')の
+// ままのことがある。'·'||rollDie()という書き方は非空文字列なのでtruthy扱いに
+// なりフォールバックが効かず、Number('·')=NaNがそのまま出目として使われて
+// 攻撃計算などがクラッシュしていた。ここでちゃんと1〜6の整数かどうか検証し、
+// そうでなければ確定値をその場で振り直す。
+function readDieBoxValue(el) {
+  const parsed = Number(el?.textContent);
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 6 ? parsed : rollDie();
 }
 
 wireMuteButton();
@@ -818,7 +829,7 @@ function renderTurnScreen() {
     button.className = 'turn-button';
     button.addEventListener('click', () => {
       if (pendingMoves[player.id] !== undefined || player.id !== activeMovePlayerId || !isMine) return;
-      const finalValue = Number(document.querySelector(`.dice-box[data-player-id="${player.id}"]`)?.textContent || rollDie());
+      const finalValue = readDieBoxValue(document.querySelector(`.dice-box[data-player-id="${player.id}"]`));
       spinDice(player.id, finalValue, 'move');
       if (onlineRole === 'host') {
         net.broadcast({ type: 'moveRoll', playerId: player.id, value: finalValue });
@@ -900,7 +911,9 @@ function renderEventLogForState(displayState = state) {
     } else if (entry.type === 'bossAttack') {
       text = `${entry.name}: ボスが${getPlayerName(entry.target)}に${entry.damage}ダメージ`;
     } else if (entry.type === 'death') {
-      text = `${getPlayerName(entry.target)}が力尽きた… HP半分で復活し、${entry.restTurns}ターン休み状態に(ボスがHP${entry.bossHeal}回復)`;
+      text = `${getPlayerName(entry.target)}が力尽きた… 復活ロールに挑戦することになる`;
+    } else if (entry.type === 'deathRoll') {
+      text = describeDeathRollOutcome(getPlayerName(entry.target), entry);
     } else if (entry.type === 'item') {
       const label = BUFF_TYPE_LABELS[entry.buffType] ?? entry.buffType;
       text = `${getPlayerName(entry.by)}が宝箱を開けた: ${label}+${entry.bonus}(${entry.duration}ターン)`;
@@ -919,6 +932,7 @@ function renderEventLogForState(displayState = state) {
       defense: '防御',
       bossAttack: 'ボス攻撃',
       death: '死亡',
+      deathRoll: '復活ロール',
       item: '宝箱',
       special: '固有効果',
     }[entry.type] || '効果';
@@ -1038,6 +1052,64 @@ const HEAL_PER_DIE = 12;
 const DEFENSE_PER_DIE = 15;
 const DAMAGE_PER_DIE = 10;
 
+// engine.js側の復活ロール関連の定数と揃える(表示用)。
+const DEATH_FREE_REVIVE_HP_RATIO = 0.5;
+const DEATH_GUARANTEED_REVIVE_HP_RATIO = 0.25;
+const DEATH_COSTLY_REVIVE_HP_PER_PLAYER = 10;
+const DEATH_COSTLY_DRAIN_PER_OTHER = 10;
+const DEATH_STRUGGLE_BOSS_HEAL = 20;
+
+function describeDeathRollOutcome(playerName, entry) {
+  if (entry.outcome === 'reviveFree') {
+    return `${playerName}は代償なしでHP${entry.hp}まで回復して復活した`;
+  }
+  if (entry.outcome === 'reviveCostly') {
+    return `${playerName}は仲間全員から10ずつHPを分けてもらい、HP${entry.hp}で復活した`;
+  }
+  if (entry.outcome === 'reviveGuaranteed') {
+    return `${playerName}は3ターン粘った末、力を振り絞ってHP${entry.hp}まで回復して復活した(ボスがHP${entry.bossHeal}回復)`;
+  }
+  return `${playerName}はまだ復活できない…(ボスがHP${entry.bossHeal}回復、挑戦${entry.attempt}/3回目)`;
+}
+
+function describeDeathRollTable(player, totalPlayers) {
+  const freeHp = Math.floor(player.maxHp * DEATH_FREE_REVIVE_HP_RATIO);
+  const guaranteedHp = Math.floor(player.maxHp * DEATH_GUARANTEED_REVIVE_HP_RATIO);
+  const costlyHp = totalPlayers * DEATH_COSTLY_REVIVE_HP_PER_PLAYER;
+  return `
+    <table class="die-face-table">
+      <thead>
+        <tr><th>目</th><th>効果</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>1</td><td>仲間全員からHPを${DEATH_COSTLY_DRAIN_PER_OTHER}ずつもらい、HP${costlyHp}で即時復活</td></tr>
+        <tr><td>2</td><td>復活できず、ボスのHPが${DEATH_STRUGGLE_BOSS_HEAL}回復(3回失敗するとHP${guaranteedHp}で復活)</td></tr>
+        <tr><td>3</td><td>復活できず、ボスのHPが${DEATH_STRUGGLE_BOSS_HEAL}回復(3回失敗するとHP${guaranteedHp}で復活)</td></tr>
+        <tr><td>4</td><td>復活できず、ボスのHPが${DEATH_STRUGGLE_BOSS_HEAL}回復(3回失敗するとHP${guaranteedHp}で復活)</td></tr>
+        <tr><td>5</td><td>代償なしでHP${freeHp}まで回復して即時復活</td></tr>
+        <tr><td>6</td><td>代償なしでHP${freeHp}まで回復して即時復活</td></tr>
+      </tbody>
+    </table>
+  `;
+}
+
+// engine.js側resolveEffectsの復活ロール処理と同じ分岐をプレビュー用に再現する
+// (実際の状態変更はplayTurn呼び出し時にengine.js側で行われる。ここでは
+// ポップアップに出す結果テキストのための見込み値だけを計算する)。
+function previewDeathRollEntry(player, dieValue, totalPlayers) {
+  if (dieValue === 5 || dieValue === 6) {
+    return { outcome: 'reviveFree', hp: Math.floor(player.maxHp * DEATH_FREE_REVIVE_HP_RATIO) };
+  }
+  if (dieValue === 1) {
+    return { outcome: 'reviveCostly', hp: totalPlayers * DEATH_COSTLY_REVIVE_HP_PER_PLAYER };
+  }
+  const attempt = (player.deathAttempt ?? 0) + 1;
+  if (attempt >= 3) {
+    return { outcome: 'reviveGuaranteed', hp: Math.floor(player.maxHp * DEATH_GUARANTEED_REVIVE_HP_RATIO), bossHeal: DEATH_STRUGGLE_BOSS_HEAL };
+  }
+  return { outcome: 'struggle', attempt, bossHeal: DEATH_STRUGGLE_BOSS_HEAL };
+}
+
 function describeCellEffect(player, cell, dieValue) {
   if (cell.type === 'heal') {
     const amount = dieValue * HEAL_PER_DIE + activeBuffBonus(player, 'heal');
@@ -1118,11 +1190,11 @@ function describeBossDieFaceTable(bossId) {
   `;
 }
 
-function buildEffectPopupContentHtml(playerName, cellKind, tableHtml, dieText, resultHtml = '') {
+function buildEffectPopupContentHtml(playerName, summaryLabel, tableHtml, dieText, resultHtml = '') {
   return `
     <h3>${playerName}の番</h3>
     <div class="turn-popup-message">
-      <div class="die-face-summary">${cellKind}マス</div>
+      <div class="die-face-summary">${summaryLabel}</div>
       ${tableHtml}
       ${resultHtml}
     </div>
@@ -1136,11 +1208,12 @@ async function renderEffectRollScreen() {
   effectRolls = {};
 
   for (const player of state.players) {
-    const cell = getCell(state.map, player.position.track, player.position.index);
-    if (!['heal', 'attack', 'defense', 'damage', 'item'].includes(cell.type)) continue;
-    const cellKind = { heal: '回復', attack: '攻撃', defense: '防御', damage: 'ダメージ', item: '宝箱' }[cell.type];
+    const isDead = !!player.dead;
+    const cell = isDead ? null : getCell(state.map, player.position.track, player.position.index);
+    if (!isDead && !['heal', 'attack', 'defense', 'damage', 'item'].includes(cell.type)) continue;
+    const summaryLabel = isDead ? '復活ロール' : `${{ heal: '回復', attack: '攻撃', defense: '防御', damage: 'ダメージ', item: '宝箱' }[cell.type]}マス`;
     const isLocalTurn = !onlineRole || player.id === localPlayerId;
-    const tableHtml = describeDieFaceTable(cell.type, player);
+    const tableHtml = isDead ? describeDeathRollTable(player, state.players.length) : describeDieFaceTable(cell.type, player);
 
     const finalValue = await new Promise((resolve) => {
       const overlay = document.createElement('div');
@@ -1169,9 +1242,14 @@ async function renderEffectRollScreen() {
         playerCard.classList.toggle('is-rolling', isActive);
       };
 
-      const paint = (dieText, resultHtml = '') => {
-        contentDiv.innerHTML = buildEffectPopupContentHtml(player.name, cellKind, tableHtml, dieText, resultHtml);
-        // mirrorOverlayはfinish関数内で効果音タイプと一緒に呼ばれる
+      // paintは毎回呼ぶたびにmirrorOverlayも送る(フリック中の見た目も含めて
+      // 全端末で同じものが見えるようにする)。以前はfinish内でしか
+      // mirrorOverlayを呼んでいなかったため、ロール中は他端末に何も届かず、
+      // ホスト以外の参加者は自分の番のダイスがそもそも表示されない不具合が
+      // あった。
+      const paint = (dieText, resultHtml = '', metaExtra = {}) => {
+        contentDiv.innerHTML = buildEffectPopupContentHtml(player.name, summaryLabel, tableHtml, dieText, resultHtml);
+        mirrorOverlay(contentDiv.innerHTML, { kind: 'effectRoll', playerId: player.id, cellType: isDead ? 'deathRoll' : cell.type, ...metaExtra });
       };
 
       let intervalId = null;
@@ -1181,35 +1259,39 @@ async function renderEffectRollScreen() {
         updateActivePlayerGlow(false);
 
         let sfxType = null;
-        if (cell.type === 'heal') {
-          playSfx('heal');
-          sfxType = 'heal';
-        }
-        if (cell.type === 'attack') {
-          playSfx('playerAttack');
-          sfxType = 'attack';
-        }
-        if (cell.type === 'defense') {
-          playSfx('defense');
-          sfxType = 'defense';
-        }
-        if (cell.type === 'item') {
-          playSfx('treasure');
-          sfxType = 'item';
-        }
-        if (cell.type === 'damage' && value <= 2) {
-          playSfx('miss');
-          sfxType = 'miss';
+        let resultText;
+        if (isDead) {
+          const preview = previewDeathRollEntry(player, value, state.players.length);
+          resultText = describeDeathRollOutcome(player.name, preview);
+          sfxType = preview.outcome === 'struggle' ? 'miss' : 'heal';
+          if (sfxType === 'heal') playSfx('heal'); else playSfx('miss');
+        } else {
+          if (cell.type === 'heal') {
+            playSfx('heal');
+            sfxType = 'heal';
+          }
+          if (cell.type === 'attack') {
+            playSfx('playerAttack');
+            sfxType = 'attack';
+          }
+          if (cell.type === 'defense') {
+            playSfx('defense');
+            sfxType = 'defense';
+          }
+          if (cell.type === 'item') {
+            playSfx('treasure');
+            sfxType = 'item';
+          }
+          if (cell.type === 'damage' && value <= 2) {
+            playSfx('miss');
+            sfxType = 'miss';
+          }
+          resultText = describeCellEffect(player, cell, value);
         }
 
         effectRolls[player.id] = value;
-        const resultText = describeCellEffect(player, cell, value);
-        paint(String(value), `<div class="die-face-result">→ ${resultText}</div>`);
-        // 効果音タイプをオーバーレイメタデータに含める
-        setTimeout(() => {
-          mirrorOverlay(contentDiv.innerHTML, { kind: 'effectRoll', playerId: player.id, cellType: cell.type, type: sfxType });
-          resolve(value);
-        }, 2000);
+        paint(String(value), `<div class="die-face-result">→ ${resultText}</div>`, { type: sfxType });
+        setTimeout(() => resolve(value), 2000);
       };
 
       if (isLocalTurn) {
@@ -1218,7 +1300,7 @@ async function renderEffectRollScreen() {
         button.className = 'turn-button';
         button.textContent = 'このプレイヤーのサイコロを振る';
         button.addEventListener('click', () => {
-          const value = Number(contentDiv.querySelector('.dice-box')?.textContent || rollDie());
+          const value = readDieBoxValue(contentDiv.querySelector('.dice-box'));
           finish(value);
           if (onlineRole === 'host') net.broadcast({ type: 'effectRollValue', playerId: player.id, value });
         });
@@ -1244,7 +1326,9 @@ async function renderEffectRollScreen() {
       requestAnimationFrame(() => focusBoardOnPlayer(player.id));
     });
 
-    const resultText = describeCellEffect(player, cell, finalValue);
+    const resultText = isDead
+      ? describeDeathRollOutcome(player.name, previewDeathRollEntry(player, finalValue, state.players.length))
+      : describeCellEffect(player, cell, finalValue);
     renderGame(state, app);
     mirrorScene(state);
     app.appendChild(renderPhaseBanner('効果発動', resultText));
@@ -1327,7 +1411,7 @@ async function resolveTurn() {
     for (const entry of deathEntries) {
       const item = document.createElement('div');
       item.className = 'turn-popup-message';
-      item.textContent = `${getPlayerName(entry.target)}が力尽きた… HP半分で復活し、${entry.restTurns}ターン休み状態に(ボスがHP${entry.bossHeal}回復)`;
+      item.textContent = `${getPlayerName(entry.target)}が力尽きた… 次のターンから、復活できるまで復活ロールに挑戦する`;
       deathPanel.appendChild(item);
     }
     deathOverlay.appendChild(deathPanel);
